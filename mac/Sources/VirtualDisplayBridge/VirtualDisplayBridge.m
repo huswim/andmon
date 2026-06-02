@@ -68,11 +68,12 @@ AndmonVirtualDisplay *AndmonVirtualDisplayCreate(void **errorOut) {
     [descriptor setValue:@(0x5355) forKey:@"vendorID"];
     [descriptor setValue:@(0x424D) forKey:@"productID"];
     [descriptor setValue:[NSValue valueWithSize:NSMakeSize(326.4, 203.7)] forKey:@"sizeInMillimeters"];
-    // Use the Display P3 gamut with a D65 white point end to end.
+    // Galaxy Tab S8 Ultra Natural mode targets the sRGB gamut with a D65
+    // white point. BT.709 uses the same primaries for the encoded SDR stream.
     [descriptor setValue:[NSValue valueWithPoint:NSMakePoint(0.3127, 0.3290)] forKey:@"whitePoint"];
     [descriptor setValue:[NSValue valueWithPoint:NSMakePoint(0.1500, 0.0600)] forKey:@"bluePrimary"];
-    [descriptor setValue:[NSValue valueWithPoint:NSMakePoint(0.2650, 0.6900)] forKey:@"greenPrimary"];
-    [descriptor setValue:[NSValue valueWithPoint:NSMakePoint(0.6800, 0.3200)] forKey:@"redPrimary"];
+    [descriptor setValue:[NSValue valueWithPoint:NSMakePoint(0.3000, 0.6000)] forKey:@"greenPrimary"];
+    [descriptor setValue:[NSValue valueWithPoint:NSMakePoint(0.6400, 0.3300)] forKey:@"redPrimary"];
 
     modeAllocated = ((id (*)(id, SEL))objc_msgSend)(modeClass, sel_registerName("alloc"));
     mode = ((id (*)(id, SEL, NSUInteger, NSUInteger, double))objc_msgSend)(
