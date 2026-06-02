@@ -68,16 +68,15 @@ AndmonVirtualDisplay *AndmonVirtualDisplayCreate(void **errorOut) {
     [descriptor setValue:@(0x5355) forKey:@"vendorID"];
     [descriptor setValue:@(0x424D) forKey:@"productID"];
     [descriptor setValue:[NSValue valueWithSize:NSMakeSize(326.4, 203.7)] forKey:@"sizeInMillimeters"];
-    // Galaxy Tab S8 Ultra Natural mode targets the sRGB gamut with a D65
-    // white point. BT.709 uses the same primaries for the encoded SDR stream.
+    // Use the Display P3 gamut with a D65 white point end to end.
     [descriptor setValue:[NSValue valueWithPoint:NSMakePoint(0.3127, 0.3290)] forKey:@"whitePoint"];
     [descriptor setValue:[NSValue valueWithPoint:NSMakePoint(0.1500, 0.0600)] forKey:@"bluePrimary"];
-    [descriptor setValue:[NSValue valueWithPoint:NSMakePoint(0.3000, 0.6000)] forKey:@"greenPrimary"];
-    [descriptor setValue:[NSValue valueWithPoint:NSMakePoint(0.6400, 0.3300)] forKey:@"redPrimary"];
+    [descriptor setValue:[NSValue valueWithPoint:NSMakePoint(0.2650, 0.6900)] forKey:@"greenPrimary"];
+    [descriptor setValue:[NSValue valueWithPoint:NSMakePoint(0.6800, 0.3200)] forKey:@"redPrimary"];
 
     modeAllocated = ((id (*)(id, SEL))objc_msgSend)(modeClass, sel_registerName("alloc"));
     mode = ((id (*)(id, SEL, NSUInteger, NSUInteger, double))objc_msgSend)(
-        modeAllocated, modeInit, 1480, 924, 60.0);
+        modeAllocated, modeInit, 1336, 834, 60.0);
     settings = [settingsClass new];
     [settings setValue:@[mode] forKey:@"modes"];
     [settings setValue:@1 forKey:@"hiDPI"];
@@ -102,9 +101,9 @@ AndmonVirtualDisplay *AndmonVirtualDisplayCreate(void **errorOut) {
     size_t pixelWidth = currentMode ? CGDisplayModeGetPixelWidth(currentMode) : 0;
     size_t pixelHeight = currentMode ? CGDisplayModeGetPixelHeight(currentMode) : 0;
     if (currentMode) CFRelease(currentMode);
-    if (logicalWidth != 1480 || logicalHeight != 924 || pixelWidth != 2960 || pixelHeight != 1848) {
+    if (logicalWidth != 1336 || logicalHeight != 834 || pixelWidth != 2672 || pixelHeight != 1668) {
         error = AndmonError([NSString stringWithFormat:
-            @"Virtual display mode is logical %zu x %zu backed by %zu x %zu; expected logical 1480 x 924 backed by 2960 x 1848",
+            @"Virtual display mode is logical %zu x %zu backed by %zu x %zu; expected logical 1336 x 834 backed by 2672 x 1668",
             logicalWidth, logicalHeight, pixelWidth, pixelHeight]);
         goto fail;
     }

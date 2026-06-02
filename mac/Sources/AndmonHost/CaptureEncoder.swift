@@ -54,6 +54,7 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
         configuration.queueDepth = 3
         configuration.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         configuration.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
+        configuration.colorSpaceName = CGColorSpace.displayP3
         configuration.showsCursor = true
 
         try createCompressionSession()
@@ -159,11 +160,11 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
         VTSessionSetProperty(created, key: kVTCompressionPropertyKey_MaximumRealTimeFrameRate, value: 60 as CFNumber)
         VTSessionSetProperty(
             created, key: kVTCompressionPropertyKey_ColorPrimaries,
-            value: kCVImageBufferColorPrimaries_ITU_R_709_2
+            value: kCVImageBufferColorPrimaries_P3_D65
         )
         VTSessionSetProperty(
             created, key: kVTCompressionPropertyKey_TransferFunction,
-            value: kCVImageBufferTransferFunction_ITU_R_709_2
+            value: kCVImageBufferTransferFunction_sRGB
         )
         VTSessionSetProperty(
             created, key: kVTCompressionPropertyKey_YCbCrMatrix,

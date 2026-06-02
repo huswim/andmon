@@ -13,10 +13,10 @@ for an Apple-silicon Mac. The runtime path is:
 
 This is a direct-run prototype. It uses undocumented macOS APIs and is not
 appropriate for App Store distribution. It intentionally targets one fixed
-Galaxy Tab S8 Ultra profile: a `1480 x 924` HiDPI desktop backed by the tablet's
-`2960 x 1848` landscape panel at `60 FPS`. Set the tablet's screen mode to
-`Natural`; the virtual display and HEVC stream use the matching sRGB / BT.709
-SDR color profile.
+Galaxy Tab S8 Ultra profile: a `1336 x 834` HiDPI desktop backed by `2672 x 1668`
+pixels and scaled to the tablet's `2960 x 1848` landscape panel at `60 FPS`.
+The virtual display, ScreenCaptureKit buffers, and HEVC stream use a Display P3
+SDR color profile. Use a tablet screen mode that exposes its wide-color gamut.
 
 ## Prerequisites
 
@@ -92,8 +92,8 @@ Studio or `adb install`. Runtime connections use AOA and do not depend on ADB.
 
 The host performs two gates before streaming:
 
-1. It creates a private virtual display and validates a `1480 x 924` logical
-   HiDPI mode backed by `2960 x 1848` pixels.
+1. It creates a private virtual display and validates a `1336 x 834` logical
+   HiDPI mode backed by `2672 x 1668` pixels.
 2. It negotiates AOA, reconnects after the USB mode switch, opens accessory
    bulk endpoints, receives Android `HELLO`, and completes `PING` / `PONG`.
 

@@ -9,6 +9,7 @@
         android:theme="@style/Theme.Andmon">
         <activity
             android:name=".MainActivity"
+            android:colorMode="wideColorGamut"
             android:configChanges="keyboardHidden|orientation|screenSize"
             android:exported="true"
             android:launchMode="singleTop"
