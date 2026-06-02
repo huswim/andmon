@@ -11,7 +11,7 @@ enum AVCCConverter {
 
     static func annexB(fromAVCC data: Data, nalLengthSize: Int = 4) throws -> Data {
         guard (1...4).contains(nalLengthSize) else { throw AVCCError.malformedAccessUnit }
-        var result = Data()
+        var result = Data(capacity: data.count)
         var offset = 0
         while offset < data.count {
             guard offset + nalLengthSize <= data.count else { throw AVCCError.malformedAccessUnit }
@@ -48,7 +48,7 @@ enum AVCCConverter {
         }
 
         guard status == noErr, count > 0 else { throw AVCCError.missingParameterSets }
-        var result = Data()
+        var result = Data(capacity: 128)
         for index in 0..<count {
             var pointer: UnsafePointer<UInt8>?
             var size = 0

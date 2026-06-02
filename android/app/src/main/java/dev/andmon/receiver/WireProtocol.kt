@@ -1,6 +1,5 @@
 package dev.andmon.receiver
 
-import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -47,46 +46,60 @@ object WireProtocol {
 }
 
 class FrameParser {
-    private var pending = ByteArrayOutputStream()
+    private var buffer = ByteBuffer.allocate(256 * 1024).order(ByteOrder.BIG_ENDIAN)
+    private val magic = byteArrayOf(0x41, 0x4e, 0x44, 0x4d)
+    private val headerBuf = ByteArray(4)
 
     @Synchronized
     @Throws(ProtocolException::class)
     fun append(bytes: ByteArray, length: Int = bytes.size): List<WireFrame> {
         require(length in 0..bytes.size)
-        pending.write(bytes, 0, length)
-        val source = pending.toByteArray()
-        var offset = 0
+        if (buffer.remaining() < length) grow(length)
+        buffer.put(bytes, 0, length)
+        buffer.flip()
         val frames = mutableListOf<WireFrame>()
 
-        while (source.size - offset >= WireProtocol.HEADER_SIZE) {
-            val header = ByteBuffer.wrap(source, offset, WireProtocol.HEADER_SIZE).order(ByteOrder.BIG_ENDIAN)
-            val magic = ByteArray(4).also(header::get)
-            if (!magic.contentEquals(byteArrayOf(0x41, 0x4e, 0x44, 0x4d))) {
+        while (buffer.remaining() >= WireProtocol.HEADER_SIZE) {
+            val mark = buffer.position()
+            buffer.get(headerBuf)
+            if (!headerBuf.contentEquals(magic)) {
                 throw ProtocolException("Invalid frame magic")
             }
-            val version = header.get().toInt() and 0xff
+            val version = buffer.get().toInt() and 0xff
             if (version != 1) throw ProtocolException("Unsupported protocol version: $version")
-            val type = MessageType.fromValue(header.get().toInt() and 0xff)
-            val flags = header.short.toInt() and 0xffff
-            val payloadLength = header.int
+            val type = MessageType.fromValue(buffer.get().toInt() and 0xff)
+            val flags = buffer.short.toInt() and 0xffff
+            val payloadLength = buffer.int
             if (payloadLength < 0 || payloadLength > WireProtocol.MAX_PAYLOAD_SIZE) {
                 throw ProtocolException("Invalid payload length: $payloadLength")
             }
-            val sequence = header.int.toLong() and 0xffffffffL
-            val ptsMicros = header.long
+            val sequence = buffer.int.toLong() and 0xffffffffL
+            val ptsMicros = buffer.long
             val totalLength = WireProtocol.HEADER_SIZE + payloadLength
-            if (source.size - offset < totalLength) break
+            if (buffer.remaining() < payloadLength) {
+                buffer.position(mark)
+                break
+            }
+            val payload = ByteArray(payloadLength)
+            buffer.get(payload)
             frames += WireFrame(
                 type = type,
                 flags = flags,
                 sequence = sequence,
                 ptsMicros = ptsMicros,
-                payload = source.copyOfRange(offset + WireProtocol.HEADER_SIZE, offset + totalLength),
+                payload = payload,
             )
-            offset += totalLength
         }
 
-        pending = ByteArrayOutputStream().also { it.write(source, offset, source.size - offset) }
+        buffer.compact()
         return frames
+    }
+
+    private fun grow(needed: Int) {
+        val newCapacity = maxOf(buffer.capacity() * 2, buffer.position() + needed)
+        val grown = ByteBuffer.allocate(newCapacity).order(ByteOrder.BIG_ENDIAN)
+        buffer.flip()
+        grown.put(buffer)
+        buffer = grown
     }
 }

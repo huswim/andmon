@@ -51,7 +51,7 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
         // VideoToolbox retains capture surfaces asynchronously while encoding.
         // Keep one additional surface available so ScreenCaptureKit can continue
         // producing frames while the current frame is in flight.
-        configuration.queueDepth = 2
+        configuration.queueDepth = 3
         configuration.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         configuration.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
         configuration.showsCursor = true
@@ -150,14 +150,11 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
         VTSessionSetProperty(
             created, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanTrue
         )
+        VTSessionSetProperty(created, key: kVTCompressionPropertyKey_Quality, value: 0.5 as CFNumber)
         VTSessionSetProperty(created, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
         VTSessionSetProperty(created, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrate as CFNumber)
-        VTSessionSetProperty(
-            created, key: kVTCompressionPropertyKey_DataRateLimits,
-            value: [bitrate / 8, 1] as CFArray
-        )
         VTSessionSetProperty(created, key: kVTCompressionPropertyKey_MaxFrameDelayCount, value: 0 as CFNumber)
-        VTSessionSetProperty(created, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 120 as CFNumber)
+        VTSessionSetProperty(created, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 60 as CFNumber)
         VTSessionSetProperty(created, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 60 as CFNumber)
         VTSessionSetProperty(created, key: kVTCompressionPropertyKey_MaximumRealTimeFrameRate, value: 60 as CFNumber)
         VTSessionSetProperty(
@@ -198,12 +195,11 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
                 }
             }
             let avcc = try blockBuffer.contiguousData()
-            let annexB = try AVCCConverter.annexB(fromAVCC: avcc)
             let keyframe = !sampleBuffer.isNotSync
-            let enqueueResult = try transport.send(
+            let enqueueResult = try transport.sendAVCC(
                 type: .video, flags: keyframe ? 1 : 0,
                 ptsMicros: UInt64(max(0, sampleBuffer.presentationTimeStamp.seconds * 1_000_000)),
-                payload: annexB
+                avccPayload: avcc
             )
             if !enqueueResult.acceptedForDecoder(isKeyframe: keyframe) { requestKeyframe() }
         } catch {
@@ -288,7 +284,7 @@ private extension CMBlockBuffer {
             self, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &pointer
         )
         if status == kCMBlockBufferNoErr, let pointer {
-            return Data(bytes: pointer, count: length)
+            return Data(bytesNoCopy: pointer, count: length, deallocator: .none)
         }
         let dataLength = CMBlockBufferGetDataLength(self)
         var data = Data(count: dataLength)

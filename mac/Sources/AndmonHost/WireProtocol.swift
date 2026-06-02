@@ -26,7 +26,8 @@ struct WireFrame: Equatable, Sendable {
         guard payload.count <= Self.maximumPayloadSize else {
             throw ProtocolError.payloadTooLarge(payload.count)
         }
-        var data = Data("ANDM".utf8)
+        var data = Data(capacity: Self.headerSize + payload.count)
+        data.append(contentsOf: "ANDM".utf8)
         data.append(1)
         data.append(type.rawValue)
         data.appendBigEndian(flags)
@@ -34,6 +35,44 @@ struct WireFrame: Equatable, Sendable {
         data.appendBigEndian(sequence)
         data.appendBigEndian(ptsMicros)
         data.append(payload)
+        return data
+    }
+
+    static func encodeWithAVCCtoAnnexB(
+        type: MessageType,
+        flags: UInt16,
+        sequence: UInt32,
+        ptsMicros: UInt64,
+        avccData: Data,
+        nalLengthSize: Int = 4
+    ) throws -> Data {
+        guard (1...4).contains(nalLengthSize) else { throw AVCCError.malformedAccessUnit }
+        guard avccData.count <= Self.maximumPayloadSize else {
+            throw ProtocolError.payloadTooLarge(avccData.count)
+        }
+        var data = Data(capacity: Self.headerSize + avccData.count)
+        data.append(contentsOf: "ANDM".utf8)
+        data.append(1)
+        data.append(type.rawValue)
+        data.appendBigEndian(flags)
+        data.appendBigEndian(UInt32(avccData.count))
+        data.appendBigEndian(sequence)
+        data.appendBigEndian(ptsMicros)
+
+        let startCode = Data([0x00, 0x00, 0x00, 0x01])
+        var offset = 0
+        while offset < avccData.count {
+            guard offset + nalLengthSize <= avccData.count else { throw AVCCError.malformedAccessUnit }
+            var length = 0
+            for byte in avccData[offset..<(offset + nalLengthSize)] {
+                length = (length << 8) | Int(byte)
+            }
+            offset += nalLengthSize
+            guard length > 0, offset + length <= avccData.count else { throw AVCCError.malformedAccessUnit }
+            data.append(startCode)
+            data.append(avccData[offset..<(offset + length)])
+            offset += length
+        }
         return data
     }
 }

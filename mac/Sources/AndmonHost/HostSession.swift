@@ -45,6 +45,8 @@ final class HostSession: @unchecked Sendable {
         self.bitrate = bitrate
     }
 
+
+
     func setBitrate(_ bitrate: Int) {
         stateQueue.async { [weak self] in
             guard let self, self.bitrate != bitrate else { return }

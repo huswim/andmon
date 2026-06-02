@@ -7,6 +7,7 @@ import android.view.Surface
 import org.json.JSONObject
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
 
 class AccessorySession(
@@ -23,7 +24,10 @@ class AccessorySession(
     private var streamConfig: StreamConfig? = null
     private val pendingPongs = mutableListOf<ByteArray>()
     private val keyframeRecovery = KeyframeRecovery()
+    private val decodeQueue = ArrayBlockingQueue<WireFrame>(2)
+    private var decodeThread: Thread? = null
     private var nextSequence = 1L
+    var usbVideoDrops = 0
 
     val isOpen: Boolean
         get() = running.get()
@@ -41,6 +45,7 @@ class AccessorySession(
 
     fun open(accessory: UsbAccessory, panelWidth: Int, panelHeight: Int) {
         close()
+        usbVideoDrops = 0
         if (panelWidth != TabletProfile.PANEL_WIDTH || panelHeight != TabletProfile.PANEL_HEIGHT) {
             onStatus(
                 "Unsupported panel: ${panelWidth} x ${panelHeight}; expected " +
@@ -61,6 +66,7 @@ class AccessorySession(
         onStatus("Negotiating with Mac")
         Thread({ helloLoop(panelWidth, panelHeight) }, "andmon-hello-retry").start()
         Thread({ readLoop() }, "andmon-usb-reader").start()
+        decodeThread = Thread({ decodeLoop() }, "andmon-decoder").also { it.start() }
     }
 
     private fun sendHello(panelWidth: Int, panelHeight: Int) {
@@ -86,6 +92,7 @@ class AccessorySession(
     }
 
     private fun readLoop() {
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
         val parser = FrameParser()
         val buffer = ByteArray(64 * 1024)
         try {
@@ -99,6 +106,32 @@ class AccessorySession(
         } finally {
             close()
             onStatus("Waiting for USB cable")
+        }
+    }
+
+    private fun decodeLoop() {
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_VIDEO)
+        try {
+            while (running.get()) {
+                val frame = try { decodeQueue.poll(100, java.util.concurrent.TimeUnit.MILLISECONDS) } catch (_: InterruptedException) { null }
+                if (frame == null) continue
+                when (frame.type) {
+                    MessageType.CODEC_CONFIG -> {
+                        if (configured && !decoder.queue(frame, codecConfig = true)) {
+                            reject("Decoder did not accept HEVC parameter sets")
+                        }
+                    }
+                    MessageType.VIDEO -> {
+                        if (configured) {
+                            val queued = decoder.queue(frame)
+                            if (keyframeRecovery.onVideoResult(queued, (frame.flags and 1) != 0)) send(MessageType.KEYFRAME_REQUEST)
+                        }
+                    }
+                    else -> {}
+                }
+            }
+        } catch (error: Exception) {
+            if (running.get()) onStatus("Decode error: ${error.message}")
         }
     }
 
@@ -121,14 +154,18 @@ class AccessorySession(
             }
             MessageType.CODEC_CONFIG -> {
                 if (!configured) return
-                if (!decoder.queue(frame, codecConfig = true)) {
-                    reject("Decoder did not accept HEVC parameter sets")
-                }
+                decodeQueue.put(frame)
             }
             MessageType.VIDEO -> {
                 if (!configured) return
-                val queued = decoder.queue(frame)
-                if (keyframeRecovery.onVideoResult(queued, (frame.flags and 1) != 0)) send(MessageType.KEYFRAME_REQUEST)
+                if (!decodeQueue.offer(frame)) {
+                    val dropped = decodeQueue.poll()
+                    if (dropped != null) {
+                        usbVideoDrops++
+                        if (keyframeRecovery.onVideoResult(false, (dropped.flags and 1) != 0)) send(MessageType.KEYFRAME_REQUEST)
+                    }
+                    decodeQueue.offer(frame)
+                }
             }
             MessageType.PING -> pongWhenReady(frame.payload)
             MessageType.STOP -> {
@@ -198,6 +235,9 @@ class AccessorySession(
         streamConfig = null
         pendingPongs.clear()
         keyframeRecovery.reset()
+        decodeQueue.clear()
+        decodeThread?.interrupt()
+        decodeThread = null
         decoder.close()
         input?.runCatching { close() }
         output?.runCatching { close() }

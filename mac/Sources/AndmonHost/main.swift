@@ -5,7 +5,7 @@ import Darwin
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let bitrates = [12, 20, 30, 40, 60, 80, 100].map { $0 * 1_000_000 }
     private let session: HostSession
-    private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let statusItem = NSMenuItem(title: HostStatus.disconnected.title, action: nil, keyEquivalent: "")
     private let bitrateMenu = NSMenu()
     private var signalSources: [DispatchSourceSignal] = []
@@ -19,7 +19,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installSignalHandlers()
-        item.button?.title = "Andmon"
+        item.button?.image = NSImage(systemSymbolName: "display.2", accessibilityDescription: "Andmon")
+        item.button?.toolTip = "Andmon: \(HostStatus.disconnected.title)"
         let menu = NSMenu()
         statusItem.isEnabled = false
         menu.addItem(statusItem)
@@ -36,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.menu = menu
         session.onStatus = { [weak self] status in
             self?.statusItem.title = status.title
-            self?.item.button?.title = status == .streaming ? "Andmon: Streaming" : "Andmon"
+            self?.item.button?.toolTip = "Andmon: \(status.title)"
         }
         session.resume()
     }

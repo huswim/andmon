@@ -2,6 +2,7 @@
 
 #import <Foundation/Foundation.h>
 #import <dlfcn.h>
+#import <mach-o/dyld.h>
 #import <string.h>
 #import <unistd.h>
 
@@ -108,17 +109,27 @@ static BOOL LoadSymbol(void *library, void **out, const char *name, NSError **er
 }
 
 static BOOL LoadUSB(USBAPI *api, NSError **error) {
+    char executablePath[PATH_MAX];
+    uint32_t executablePathSize = sizeof(executablePath);
+    NSString *bundledLibraryPath = nil;
+    if (_NSGetExecutablePath(executablePath, &executablePathSize) == 0) {
+        bundledLibraryPath = [[[[NSString stringWithUTF8String:executablePath]
+            stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"../Frameworks/libusb-1.0.dylib"]
+            stringByStandardizingPath];
+    }
     const char *paths[] = {
+        bundledLibraryPath.fileSystemRepresentation,
         "/opt/homebrew/opt/libusb/lib/libusb-1.0.dylib",
         "/usr/local/opt/libusb/lib/libusb-1.0.dylib",
         "libusb-1.0.dylib",
     };
     for (unsigned i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+        if (!paths[i]) continue;
         api->library = dlopen(paths[i], RTLD_NOW | RTLD_LOCAL);
         if (api->library) break;
     }
     if (!api->library) {
-        *error = USBError(@"Homebrew libusb was not found. Run: brew install libusb");
+        *error = USBError(@"Bundled or Homebrew libusb was not found");
         return NO;
     }
 #define LOAD(field, name) if (!LoadSymbol(api->library, (void **)&api->field, name, error)) return NO

@@ -22,7 +22,7 @@ SDR color profile.
 
 - macOS 26 or newer and Xcode 26.5
 - Apple-silicon Mac
-- Homebrew `libusb`: `brew install libusb`
+- Homebrew `libusb` for building the distributable macOS app: `brew install libusb`
 - Android Studio or JDK 17: `brew install openjdk@17`
 - Android SDK 36 and Build Tools 36.0.0
 - Galaxy Tab S8 Ultra with the Android app installed once during development
@@ -42,6 +42,18 @@ swift run AndmonHost --virtual-display-gate
 swift run AndmonHost --aoa-gate
 swift run AndmonHost
 ```
+
+Build a distributable macOS menu bar app with a bundled `libusb`:
+
+```sh
+./scripts/build-mac-app.sh
+open mac/.build/release/Andmon.app
+```
+
+The generated `Andmon.app` does not require Homebrew or a separately installed
+`libusb` at runtime. The packaging script uses Homebrew `libusb` as its input,
+copies the dylib and its LGPL license into the app bundle, and applies an ad hoc
+signature for direct local distribution.
 
 Build and test Android with Gradle 9.4.1:
 

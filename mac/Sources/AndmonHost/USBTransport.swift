@@ -70,6 +70,42 @@ final class USBTransport: @unchecked Sendable {
         return USBTransportSendResult(replacedVideo: enqueueResult.replacedVideo)
     }
 
+    @discardableResult
+    func sendAVCC(
+        type: MessageType, flags: UInt16 = 0, ptsMicros: UInt64 = 0, avccPayload: Data
+    ) throws -> USBTransportSendResult {
+        let bytes = try lock.withLock { () -> Data in
+            defer { sequence &+= 1 }
+            return try WireFrame.encodeWithAVCCtoAnnexB(
+                type: type,
+                flags: flags,
+                sequence: sequence,
+                ptsMicros: ptsMicros,
+                avccData: avccPayload
+            )
+        }
+        let enqueueResult = lock.withLock { () -> (shouldScheduleWriter: Bool, replacedVideo: Bool) in
+            var replacedVideo = false
+            if type == .video {
+                for index in pendingWrites.indices.reversed() where pendingWrites[index].type == .video {
+                    queuedBytes -= pendingWrites[index].bytes.count
+                    pendingWrites.remove(at: index)
+                    replacedVideoFrames += 1
+                    replacedVideo = true
+                }
+            }
+            pendingWrites.append(PendingWrite(type: type, bytes: bytes))
+            queuedBytes += bytes.count
+            guard !writerScheduled else { return (false, replacedVideo) }
+            writerScheduled = true
+            return (true, replacedVideo)
+        }
+        if enqueueResult.shouldScheduleWriter {
+            writeQueue.async { [weak self] in self?.writePending() }
+        }
+        return USBTransportSendResult(replacedVideo: enqueueResult.replacedVideo)
+    }
+
     func close() {
         lock.lock()
         running = false
