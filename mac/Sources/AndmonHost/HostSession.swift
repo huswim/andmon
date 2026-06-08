@@ -1,5 +1,15 @@
 import Foundation
 
+struct SessionMetrics: Sendable, Equatable {
+    var capturedFPS: Int = 0
+    var encodedFPS: Int = 0
+    var encodeLatencyAvgMs: Double = 0.0
+    var encodeLatencyMaxMs: Double = 0.0
+    var encoderInputDrops: Int = 0
+    var usbQueueBytes: Int = 0
+    var usbVideoDrops: Int = 0
+}
+
 enum HostStatus: Equatable {
     case disconnected
     case negotiating
@@ -38,6 +48,7 @@ final class HostSession: @unchecked Sendable {
     private var currentStatus: HostStatus?
     private var bitrate: Int
     var onStatus: (@MainActor (HostStatus) -> Void)?
+    var onMetrics: (@MainActor (SessionMetrics) -> Void)?
 
     init(
         bitrate: Int = CaptureEncoder.defaultBitrate
@@ -331,6 +342,15 @@ final class HostSession: @unchecked Sendable {
         let streamer = CaptureEncoder(
             displayID: display.displayID, transport: transport, bitrate: bitrate
         )
+        streamer.onMetrics = { [weak self, weak streamerRef = streamer] metrics in
+            guard let self, let streamerRef else { return }
+            self.stateQueue.async {
+                guard self.streamer === streamerRef else { return }
+                Task { @MainActor in
+                    self.onMetrics?(metrics)
+                }
+            }
+        }
         self.streamer = streamer
         Task {
             do {
@@ -410,7 +430,13 @@ final class HostSession: @unchecked Sendable {
         guard status != currentStatus else { return }
         currentStatus = status
         fputs("\(status.title)\n", stderr)
-        Task { @MainActor [weak self] in self?.onStatus?(status) }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.onStatus?(status)
+            if status != .streaming {
+                self.onMetrics?(SessionMetrics())
+            }
+        }
     }
 
     private func diagnostic(_ error: Error) -> Data {

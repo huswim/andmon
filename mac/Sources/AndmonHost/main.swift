@@ -1,15 +1,18 @@
 import AppKit
 import Darwin
+import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let bitrates = [12, 20, 30, 40, 60, 80, 100].map { $0 * 1_000_000 }
     private let session: HostSession
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-    private let statusItem = NSMenuItem(title: HostStatus.disconnected.title, action: nil, keyEquivalent: "")
-    private let bitrateMenu = NSMenu()
+    private var popover: NSPopover?
+    private var viewModel: SessionViewModel?
     private var signalSources: [DispatchSourceSignal] = []
     private var terminating = false
+    private var pulseTimer: Timer?
+    private var pulseState = false
 
     override init() {
         let bitrate = Self.migrateBitrate(in: .standard)
@@ -19,41 +22,111 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installSignalHandlers()
-        item.button?.image = NSImage(systemSymbolName: "display.2", accessibilityDescription: "Andmon")
-        item.button?.toolTip = "Andmon: \(HostStatus.disconnected.title)"
-        let menu = NSMenu()
-        statusItem.isEnabled = false
-        menu.addItem(statusItem)
-        menu.addItem(.separator())
-        menu.addItem(withTitle: "Resume", action: #selector(resume), keyEquivalent: "r").target = self
-        menu.addItem(withTitle: "Stop", action: #selector(stop), keyEquivalent: "s").target = self
-        menu.addItem(.separator())
-        let bitrateItem = NSMenuItem(title: "Bitrate", action: nil, keyEquivalent: "")
-        bitrateItem.submenu = bitrateMenu
-        menu.addItem(bitrateItem)
-        configureBitrateMenu()
-        menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit", action: #selector(quit), keyEquivalent: "q").target = self
-        item.menu = menu
-        session.onStatus = { [weak self] status in
-            self?.statusItem.title = status.title
-            self?.item.button?.toolTip = "Andmon: \(status.title)"
+
+        let vm = SessionViewModel()
+        self.viewModel = vm
+        vm.onResume = { [weak self] in self?.resume() }
+        vm.onStop = { [weak self] in self?.stop() }
+        vm.onQuit = { [weak self] in self?.quit() }
+        vm.onBitrateChange = { [weak self] bitrate in
+            UserDefaults.standard.set(bitrate, forKey: "bitrate")
+            self?.session.setBitrate(bitrate)
         }
+        vm.bitrateMbps = Double(Self.migrateBitrate(in: .standard)) / 1_000_000.0
+
+        session.onStatus = { [weak self] status in
+            self?.viewModel?.status = status
+            self?.updateStatusItem(status: status)
+        }
+        session.onMetrics = { [weak self] metrics in
+            self?.viewModel?.metrics = metrics
+        }
+
+        let popover = NSPopover()
+        popover.contentSize = NSSize(width: 320, height: 320)
+        popover.behavior = .transient
+        popover.contentViewController = NSHostingController(rootView: PopoverView(viewModel: vm))
+        self.popover = popover
+
+        if let button = item.button {
+            button.action = #selector(togglePopover(_:))
+            button.target = self
+            updateStatusItem(status: .disconnected)
+        }
+
         session.resume()
     }
 
-    @objc private func resume() { session.resume() }
-    @objc private func stop() { session.stop() }
-    @objc private func selectBitrate(_ sender: NSMenuItem) {
-        guard let bitrate = sender.representedObject as? Int else { return }
-        UserDefaults.standard.set(bitrate, forKey: "bitrate")
-        updateBitrateChecks(selected: bitrate)
-        session.setBitrate(bitrate)
+    @objc private func togglePopover(_ sender: AnyObject?) {
+        guard let button = item.button, let popover = popover else { return }
+        if popover.isShown {
+            popover.performClose(sender)
+        } else {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
+
+    private func updateStatusItem(status: HostStatus) {
+        guard let button = item.button else { return }
+        button.toolTip = "Andmon: \(status.title)"
+
+        let systemName = "display.2"
+        guard let image = NSImage(systemSymbolName: systemName, accessibilityDescription: "Andmon") else { return }
+
+        switch status {
+        case .disconnected, .stopped:
+            stopPulse()
+            image.isTemplate = true
+            button.image = image
+        case .negotiating, .retrying:
+            image.isTemplate = false
+            let config = NSImage.SymbolConfiguration(paletteColors: [.systemOrange])
+            button.image = image.withSymbolConfiguration(config)
+            startPulse()
+        case .waitingForScreenRecordingPermission:
+            stopPulse()
+            image.isTemplate = false
+            let config = NSImage.SymbolConfiguration(paletteColors: [.systemOrange])
+            button.image = image.withSymbolConfiguration(config)
+        case .streaming:
+            stopPulse()
+            image.isTemplate = false
+            let config = NSImage.SymbolConfiguration(paletteColors: [.systemBlue])
+            button.image = image.withSymbolConfiguration(config)
+        case .error:
+            stopPulse()
+            image.isTemplate = false
+            let config = NSImage.SymbolConfiguration(paletteColors: [.systemRed])
+            button.image = image.withSymbolConfiguration(config)
+        }
+    }
+
+    private func startPulse() {
+        guard pulseTimer == nil else { return }
+        pulseState = false
+        pulseTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.pulseState.toggle()
+                self.item.button?.animator().alphaValue = self.pulseState ? 1.0 : 0.3
+            }
+        }
+    }
+
+    private func stopPulse() {
+        pulseTimer?.invalidate()
+        pulseTimer = nil
+        item.button?.alphaValue = 1.0
+    }
+
+    private func resume() { session.resume() }
+    private func stop() { session.stop() }
 
     @objc private func quit() {
         guard !terminating else { return }
         terminating = true
+        stopPulse()
         session.stop {
             DispatchQueue.main.async {
                 NSApplication.shared.terminate(nil)
@@ -71,27 +144,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func configureBitrateMenu() {
-        let selected = UserDefaults.standard.integer(forKey: "bitrate")
-        for bitrate in Self.bitrates {
-            let menuItem = NSMenuItem(
-                title: "\(bitrate / 1_000_000) Mbps",
-                action: #selector(selectBitrate(_:)),
-                keyEquivalent: ""
-            )
-            menuItem.target = self
-            menuItem.representedObject = bitrate
-            bitrateMenu.addItem(menuItem)
-        }
-        updateBitrateChecks(selected: Self.bitrates.contains(selected) ? selected : CaptureEncoder.defaultBitrate)
-    }
-
-    private func updateBitrateChecks(selected: Int) {
-        for item in bitrateMenu.items {
-            item.state = (item.representedObject as? Int) == selected ? .on : .off
-        }
-    }
-
     private static func migrateBitrate(in defaults: UserDefaults) -> Int {
         let bitrate = validBitrate(defaults.integer(forKey: "bitrate"))
             ?? validBitrate(defaults.integer(forKey: "cbrBitrate"))
@@ -104,7 +156,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private static func validBitrate(_ bitrate: Int) -> Int? {
-        bitrates.contains(bitrate) ? bitrate : nil
+        let minBitrate = 10 * 1_000_000
+        let maxBitrate = 100 * 1_000_000
+        return (minBitrate...maxBitrate).contains(bitrate) ? bitrate : nil
     }
 }
 

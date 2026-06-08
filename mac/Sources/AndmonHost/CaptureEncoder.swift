@@ -29,6 +29,7 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
     private var encodeLatencyMaxNanoseconds: UInt64 = 0
     private var encodeLatencySampleCount = 0
     private var encoderInputDrops = 0
+    var onMetrics: (@Sendable (SessionMetrics) -> Void)?
 
     init(displayID: CGDirectDisplayID, transport: USBTransport, bitrate: Int) {
         self.displayID = displayID
@@ -248,6 +249,17 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
             let averageLatency = String(format: "%.2f", snapshot.average)
             let maxLatency = String(format: "%.2f", snapshot.max)
             fputs("metrics captureFPS=\(snapshot.captured) encodedFPS=\(snapshot.encoded) bitrate=\(bitrate) encodeLatencyAvgMs=\(averageLatency) encodeLatencyMaxMs=\(maxLatency) encoderInputDrops=\(snapshot.inputDrops) usbQueueBytes=\(queuedBytes) usbVideoDrops=\(videoDrops)\n", stderr)
+
+            let metrics = SessionMetrics(
+                capturedFPS: snapshot.captured,
+                encodedFPS: snapshot.encoded,
+                encodeLatencyAvgMs: snapshot.average,
+                encodeLatencyMaxMs: snapshot.max,
+                encoderInputDrops: snapshot.inputDrops,
+                usbQueueBytes: queuedBytes,
+                usbVideoDrops: videoDrops
+            )
+            onMetrics?(metrics)
         }
         metricsTimer = timer
         timer.resume()
