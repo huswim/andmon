@@ -10,18 +10,21 @@ class SessionPolicyTest {
     @Test
     fun acceptsGalaxyTabHevcProfile() {
         assertEquals(
-            StreamConfig(2960, 1848, 60, "video/hevc"),
-            StreamConfig.validated(2960, 1848, 60, "video/hevc"),
+            StreamConfig(2960, 1848, 60, 80_000_000, "video/hevc"),
+            StreamConfig.validated(2960, 1848, 60, 80_000_000, "video/hevc"),
         )
     }
 
     @Test
     fun rejectsUnexpectedStreamProfile() {
         assertThrows(IllegalArgumentException::class.java) {
-            StreamConfig.validated(1920, 1080, 60, "video/hevc")
+            StreamConfig.validated(1920, 1080, 60, 80_000_000, "video/hevc")
         }
         assertThrows(IllegalArgumentException::class.java) {
-            StreamConfig.validated(2960, 1848, 60, "video/avc")
+            StreamConfig.validated(2960, 1848, 60, 80_000_000, "video/avc")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            StreamConfig.validated(2960, 1848, 60, 0, "video/hevc")
         }
     }
 

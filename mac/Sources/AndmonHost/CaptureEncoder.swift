@@ -16,6 +16,7 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
     private var stream: SCStream?
     private var compression: VTCompressionSession?
     private let encoderStateLock = NSLock()
+    private var loggedCaptureFormat = false
     private var forceKeyframe = true
     private var inFlightFrames = 0
     private var lastParameterSets: Data?
@@ -52,7 +53,8 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
         // Keep one additional surface available so ScreenCaptureKit can continue
         // producing frames while the current frame is in flight.
         configuration.queueDepth = 3
-        configuration.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        configuration.captureResolution = .best
+        configuration.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
         configuration.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
         configuration.colorSpaceName = CGColorSpace.sRGB
         configuration.showsCursor = true
@@ -104,6 +106,14 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen, let imageBuffer = sampleBuffer.imageBuffer, let compression else { return }
+        if !loggedCaptureFormat {
+            loggedCaptureFormat = true
+            fputs(
+                "capture format=\(fourCC(CVPixelBufferGetPixelFormatType(imageBuffer))) " +
+                    "size=\(CVPixelBufferGetWidth(imageBuffer))x\(CVPixelBufferGetHeight(imageBuffer))\n",
+                stderr
+            )
+        }
         metricsLock.withLock { capturedFrames += 1 }
         let admission = encoderStateLock.withLock { () -> (accepted: Bool, properties: CFDictionary?) in
             guard inFlightFrames < Self.maxInFlightFrames else { return (false, nil) }
@@ -149,11 +159,15 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
         compression = created
         VTSessionSetProperty(created, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
         VTSessionSetProperty(
-            created, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanTrue
+            created, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanFalse
         )
-        VTSessionSetProperty(created, key: kVTCompressionPropertyKey_Quality, value: 0.5 as CFNumber)
+        VTSessionSetProperty(created, key: kVTCompressionPropertyKey_Quality, value: 1.0 as CFNumber)
         VTSessionSetProperty(created, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
         VTSessionSetProperty(created, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrate as CFNumber)
+        VTSessionSetProperty(
+            created, key: kVTCompressionPropertyKey_DataRateLimits,
+            value: [bitrate / 8, 1] as CFArray
+        )
         VTSessionSetProperty(created, key: kVTCompressionPropertyKey_MaxFrameDelayCount, value: 0 as CFNumber)
         VTSessionSetProperty(created, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 60 as CFNumber)
         VTSessionSetProperty(created, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 60 as CFNumber)
@@ -239,6 +253,16 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
         timer.resume()
     }
 
+}
+
+private func fourCC(_ value: OSType) -> String {
+    let bytes = [
+        UInt8((value >> 24) & 0xff),
+        UInt8((value >> 16) & 0xff),
+        UInt8((value >> 8) & 0xff),
+        UInt8(value & 0xff),
+    ]
+    return String(bytes: bytes, encoding: .ascii) ?? String(value)
 }
 
 private final class EncodedFrameTiming {

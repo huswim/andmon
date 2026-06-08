@@ -9,7 +9,7 @@ extern "C" {
 
 typedef struct AndmonVirtualDisplay AndmonVirtualDisplay;
 
-/// Creates a 1336 x 834 HiDPI virtual desktop backed by 2672 x 1668 pixels.
+/// Creates a 1480 x 924 HiDPI virtual desktop backed by 2960 x 1848 pixels.
 /// Returns NULL and writes a retained CFErrorRef-compatible object on failure.
 AndmonVirtualDisplay *AndmonVirtualDisplayCreate(void **errorOut);
 void AndmonVirtualDisplayRelease(AndmonVirtualDisplay *display);

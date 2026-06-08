@@ -77,7 +77,7 @@ AndmonVirtualDisplay *AndmonVirtualDisplayCreate(void **errorOut) {
 
     modeAllocated = ((id (*)(id, SEL))objc_msgSend)(modeClass, sel_registerName("alloc"));
     mode = ((id (*)(id, SEL, NSUInteger, NSUInteger, double))objc_msgSend)(
-        modeAllocated, modeInit, 1336, 834, 60.0);
+        modeAllocated, modeInit, 1480, 924, 60.0);
     settings = [settingsClass new];
     [settings setValue:@[mode] forKey:@"modes"];
     [settings setValue:@1 forKey:@"hiDPI"];
@@ -102,9 +102,9 @@ AndmonVirtualDisplay *AndmonVirtualDisplayCreate(void **errorOut) {
     size_t pixelWidth = currentMode ? CGDisplayModeGetPixelWidth(currentMode) : 0;
     size_t pixelHeight = currentMode ? CGDisplayModeGetPixelHeight(currentMode) : 0;
     if (currentMode) CFRelease(currentMode);
-    if (logicalWidth != 1336 || logicalHeight != 834 || pixelWidth != 2672 || pixelHeight != 1668) {
+    if (logicalWidth != 1480 || logicalHeight != 924 || pixelWidth != 2960 || pixelHeight != 1848) {
         error = AndmonError([NSString stringWithFormat:
-            @"Virtual display mode is logical %zu x %zu backed by %zu x %zu; expected logical 1336 x 834 backed by 2672 x 1668",
+            @"Virtual display mode is logical %zu x %zu backed by %zu x %zu; expected logical 1480 x 924 backed by 2960 x 1848",
             logicalWidth, logicalHeight, pixelWidth, pixelHeight]);
         goto fail;
     }

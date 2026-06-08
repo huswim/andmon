@@ -21,6 +21,8 @@ class HevcSurfaceDecoder {
     private var decodeCount = 0L
     var averageDecodeTimeMs = 0.0
     var activeDecoderName = "HEVC"
+    @Volatile
+    var outputResolution = "-"
 
     private var renderThread: Thread? = null
     private val running = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -42,7 +44,7 @@ class HevcSurfaceDecoder {
             format.setFloat(MediaFormat.KEY_OPERATING_RATE, Short.MAX_VALUE.toFloat())
             format.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
             format.setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
-            format.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
+            format.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_FULL)
             it.configure(format, surface, null, 0)
             it.start()
         }
@@ -104,6 +106,10 @@ class HevcSurfaceDecoder {
                 } catch (e: Exception) {
                     -1
                 }
+                if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    outputResolution = activeCodec.outputFormat.visibleResolution()
+                    continue
+                }
                 if (index < 0) continue
 
                 val pts = info.presentationTimeUs
@@ -153,5 +159,22 @@ class HevcSurfaceDecoder {
         averageDecodeTimeMs = 0.0
         renderFrameCount = 0
         droppedFrameCount = 0
+        outputResolution = "-"
+    }
+
+    private fun MediaFormat.visibleResolution(): String {
+        val width = getInteger(MediaFormat.KEY_WIDTH)
+        val height = getInteger(MediaFormat.KEY_HEIGHT)
+        val visibleWidth = if (containsKey("crop-left") && containsKey("crop-right")) {
+            getInteger("crop-right") - getInteger("crop-left") + 1
+        } else {
+            width
+        }
+        val visibleHeight = if (containsKey("crop-top") && containsKey("crop-bottom")) {
+            getInteger("crop-bottom") - getInteger("crop-top") + 1
+        } else {
+            height
+        }
+        return "$visibleWidth x $visibleHeight"
     }
 }

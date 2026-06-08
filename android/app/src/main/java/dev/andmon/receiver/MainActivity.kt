@@ -72,7 +72,9 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
             textSize = 22f
             gravity = Gravity.CENTER
         }
-        surfaceView = SurfaceView(this)
+        surfaceView = SurfaceView(this).apply {
+            holder.setFixedSize(TabletProfile.PANEL_WIDTH, TabletProfile.PANEL_HEIGHT)
+        }
 
         usbManager = getSystemService(USB_SERVICE) as UsbManager
         decoder = HevcSurfaceDecoder()
@@ -183,10 +185,18 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
         val decoderDrops = decoder.droppedFrameCount
         val usbDrops = session.usbVideoDrops
         val vsync = if (decoder.vsyncEnabled) "ON (Smooth)" else "OFF (Immediate)"
+        val videoResolution = session.videoResolution
+        val videoBitrate = session.videoBitrate
+        val decoderOutput = decoder.outputResolution
+        val surfaceResolution = "${surfaceView.width} x ${surfaceView.height}"
 
         val content = """
             [ telemetry HUD ]
             • Decoder: $decoderName
+            • Video Resolution: $videoResolution
+            • Video Bitrate: $videoBitrate
+            • Decoder Output: $decoderOutput
+            • Surface Size: $surfaceResolution
             • VSync Sync: $vsync
             • Render FPS: $fps fps
             • Decoded Frames: $currentRendered

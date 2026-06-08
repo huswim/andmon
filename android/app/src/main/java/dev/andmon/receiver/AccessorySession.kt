@@ -21,6 +21,7 @@ class AccessorySession(
     private val running = AtomicBoolean(false)
     private var surface: Surface? = null
     private var configured = false
+    @Volatile
     private var streamConfig: StreamConfig? = null
     private val pendingPongs = mutableListOf<ByteArray>()
     private val keyframeRecovery = KeyframeRecovery()
@@ -31,6 +32,12 @@ class AccessorySession(
 
     val isOpen: Boolean
         get() = running.get()
+
+    val videoResolution: String
+        get() = streamConfig?.let { "${it.width} x ${it.height}" } ?: "-"
+
+    val videoBitrate: String
+        get() = streamConfig?.let { "${it.bitrate / 1_000_000} Mbps" } ?: "-"
 
     @Synchronized
     fun updateSurface(surface: Surface?) {
@@ -145,6 +152,7 @@ class AccessorySession(
                             config.getInt("width"),
                             config.getInt("height"),
                             config.getInt("fps"),
+                            config.getInt("bitrate"),
                             config.getString("codec"),
                         ),
                     )

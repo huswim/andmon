@@ -111,7 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 private func runVirtualDisplayGate() -> Never {
     do {
         let display = try VirtualDisplay()
-        print("PASS virtual display gate: displayID=\(display.displayID), logical=1336x834, backing=2672x1668")
+        print("PASS virtual display gate: displayID=\(display.displayID), logical=1480x924, backing=2960x1848")
         display.close()
         exit(EXIT_SUCCESS)
     } catch {
