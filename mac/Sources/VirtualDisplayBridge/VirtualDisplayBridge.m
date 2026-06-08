@@ -58,7 +58,9 @@ AndmonVirtualDisplay *AndmonVirtualDisplayCreate(void **errorOut) {
     descriptor = [descriptorClass new];
     // Keep the identity stable so macOS restores the saved display arrangement
     // when the virtual display is recreated after the host restarts.
-    uint32_t serial = 1;
+    // We use a unique fixed value instead of 1 to avoid conflicts with other 
+    // virtual displays that might have been mistakenly set to mirror.
+    uint32_t serial = 0x414E444D; // "ANDM" in hex
     [descriptor setValue:dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0) forKey:@"queue"];
     [descriptor setValue:@"Andmon Galaxy Tab" forKey:@"name"];
     [descriptor setValue:@2960 forKey:@"maxPixelsWide"];
