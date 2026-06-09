@@ -218,6 +218,11 @@ final class HostSession: @unchecked Sendable {
                 return
             }
 
+            // Scale deltas down to compensate for macOS scroll acceleration and match finger speed
+            let sensitivity = 0.25
+            dx *= sensitivity
+            dy *= sensitivity
+
             // Detect macOS natural scrolling setting and invert deltas if disabled
             var naturalScroll = true
             if let globalDefaults = UserDefaults.standard.persistentDomain(forName: UserDefaults.globalDomain),
