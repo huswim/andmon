@@ -23,6 +23,7 @@ let package = Package(
                 .linkedFramework("AppKit"),
                 .linkedFramework("ScreenCaptureKit"),
                 .linkedFramework("VideoToolbox"),
+                .linkedFramework("ServiceManagement"),
             ]
         ),
         .testTarget(

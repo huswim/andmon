@@ -10,6 +10,7 @@ final class SessionViewModel {
     var maxFrameRate: Int = CaptureEncoder.defaultMaxFrameRate
     var audioEnabled = true
     var touchEnabled = false
+    var launchAtLoginEnabled = false
     var connectionMode: ConnectionMode = .wired
     var tabletIP: String = ""
 
@@ -20,6 +21,7 @@ final class SessionViewModel {
     var onMaxFrameRateChange: ((Int) -> Void)?
     var onAudioToggle: ((Bool) -> Void)?
     var onTouchToggle: ((Bool) -> Void)?
+    var onLaunchAtLoginToggle: ((Bool) -> Void)?
     var onModeChange: ((ConnectionMode) -> Void)?
     var onIPChange: ((String) -> Void)?
 }
@@ -53,6 +55,9 @@ struct PopoverView: View {
 
             // Touch Section
             touchSection
+
+            // Launch at Login Section
+            launchAtLoginSection
 
             Divider()
                 .opacity(0.3)
@@ -348,6 +353,28 @@ struct PopoverView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.blue)
                 Text("Enable Touch Input")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.primary)
+            }
+        }
+        .toggleStyle(.switch)
+        .padding(.horizontal, 4)
+    }
+
+    // MARK: - Launch at Login Section
+    private var launchAtLoginSection: some View {
+        Toggle(isOn: Binding(
+            get: { viewModel.launchAtLoginEnabled },
+            set: { newValue in
+                viewModel.launchAtLoginEnabled = newValue
+                viewModel.onLaunchAtLoginToggle?(newValue)
+            }
+        )) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.right.to.line")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.blue)
+                Text("Launch at Login")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.primary)
             }

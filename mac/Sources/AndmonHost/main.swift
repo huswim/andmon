@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import SwiftUI
+import ServiceManagement
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -68,6 +69,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             UserDefaults.standard.set(enabled, forKey: "touchEnabled")
             self?.session.setTouchEnabled(enabled)
         }
+        vm.onLaunchAtLoginToggle = { [weak self] enabled in
+            let service = SMAppService.mainApp
+            do {
+                if enabled {
+                    try service.register()
+                    fputs("Successfully registered auto-start service\n", stderr)
+                } else {
+                    try service.unregister()
+                    fputs("Successfully unregistered auto-start service\n", stderr)
+                }
+            } catch {
+                fputs("Failed to change auto-start registration: \(error.localizedDescription)\n", stderr)
+                self?.viewModel?.launchAtLoginEnabled = service.status == .enabled
+            }
+        }
         vm.onModeChange = { [weak self] mode in
             UserDefaults.standard.set(mode.rawValue, forKey: "connectionMode")
             self?.updateSessionConfiguration()
@@ -81,6 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         vm.maxFrameRate = Self.migrateMaxFrameRate(in: .standard)
         vm.audioEnabled = UserDefaults.standard.object(forKey: "audioEnabled") as? Bool ?? true
         vm.touchEnabled = UserDefaults.standard.object(forKey: "touchEnabled") as? Bool ?? false
+        vm.launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
         let modeRaw = UserDefaults.standard.string(forKey: "connectionMode") ?? ""
         vm.connectionMode = ConnectionMode(rawValue: modeRaw) ?? .wired
         vm.tabletIP = UserDefaults.standard.string(forKey: "tabletIP") ?? "192.168.35.2"
