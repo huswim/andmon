@@ -27,6 +27,41 @@ struct SessionMetrics: Sendable, Equatable {
     var encoderInputDrops: Int = 0
     var usbQueueBytes: Int = 0
     var usbVideoDrops: Int = 0
+    
+    // Wireless Telemetry
+    var connectionMode: ConnectionMode = .wired
+    var rttMs: Double = 0.0
+    var wifiRssi: Int = -127
+    var wifiLinkSpeedMbps: Int = 0
+    var networkThroughputMbps: Double = 0.0
+
+    init(
+        capturedFPS: Int = 0,
+        encodedFPS: Int = 0,
+        encodeLatencyAvgMs: Double = 0.0,
+        encodeLatencyMaxMs: Double = 0.0,
+        encoderInputDrops: Int = 0,
+        usbQueueBytes: Int = 0,
+        usbVideoDrops: Int = 0,
+        connectionMode: ConnectionMode = .wired,
+        rttMs: Double = 0.0,
+        wifiRssi: Int = -127,
+        wifiLinkSpeedMbps: Int = 0,
+        networkThroughputMbps: Double = 0.0
+    ) {
+        self.capturedFPS = capturedFPS
+        self.encodedFPS = encodedFPS
+        self.encodeLatencyAvgMs = encodeLatencyAvgMs
+        self.encodeLatencyMaxMs = encodeLatencyMaxMs
+        self.encoderInputDrops = encoderInputDrops
+        self.usbQueueBytes = usbQueueBytes
+        self.usbVideoDrops = usbVideoDrops
+        self.connectionMode = connectionMode
+        self.rttMs = rttMs
+        self.wifiRssi = wifiRssi
+        self.wifiLinkSpeedMbps = wifiLinkSpeedMbps
+        self.networkThroughputMbps = networkThroughputMbps
+    }
 }
 
 enum HostStatus: Equatable {
@@ -74,6 +109,15 @@ final class HostSession: @unchecked Sendable {
     private var isMouseDown = false
     private var isRuntimeStopping = false
     private var stopCompletions: [@Sendable () -> Void] = []
+    
+    // Telemetry tracking variables
+    private var lastRttMs: Double = -1.0
+    private var lastWifiRssi: Int = -127
+    private var lastWifiLinkSpeed: Int = 0
+    private var lastThroughputMbps: Double = 0.0
+    private var pingSentTimeNanoseconds: UInt64 = 0
+    private var lastThroughputTimeNanoseconds: UInt64 = 0
+    
     var onStatus: (@MainActor (HostStatus) -> Void)?
     var onMetrics: (@MainActor (SessionMetrics) -> Void)?
 
@@ -198,7 +242,32 @@ final class HostSession: @unchecked Sendable {
             case .ping:
                 try transport?.send(type: .pong, payload: frame.payload)
             case .pong:
-                guard frame.payload == pingToken else { return }
+                var token = frame.payload
+                var rssi: Int? = nil
+                var linkSpeed: Int? = nil
+                
+                do {
+                    if let json = try JSONSerialization.jsonObject(with: frame.payload, options: []) as? [String: Any] {
+                        if let tokenStr = json["token"] as? String {
+                            token = Data(tokenStr.utf8)
+                        }
+                        rssi = json["rssi"] as? Int
+                        linkSpeed = json["linkSpeed"] as? Int
+                    }
+                } catch {
+                    // Fall back to treating payload as raw token bytes
+                }
+                
+                guard token == pingToken else { return }
+                
+                if pingSentTimeNanoseconds > 0 {
+                    let diff = DispatchTime.now().uptimeNanoseconds - pingSentTimeNanoseconds
+                    lastRttMs = Double(diff) / 1_000_000.0
+                }
+                
+                if let rssi { lastWifiRssi = rssi }
+                if let linkSpeed { lastWifiLinkSpeed = linkSpeed }
+                
                 let purpose = pingPurpose
                 cancelPendingPing()
                 if purpose == .negotiation {
@@ -419,11 +488,26 @@ final class HostSession: @unchecked Sendable {
     }
 
     private func sendPing(using transport: AndmonTransport, purpose: PingPurpose) throws {
-        let token = Data(UUID().uuidString.utf8)
+        let uuidStr = UUID().uuidString
+        let token = Data(uuidStr.utf8)
         pingToken = token
         pingPurpose = purpose
+        pingSentTimeNanoseconds = DispatchTime.now().uptimeNanoseconds
+        
+        var pingPayload = token
+        if connectionMode == .wireless {
+            let jsonDict: [String: Any] = [
+                "token": uuidStr,
+                "rtt": lastRttMs,
+                "throughput": lastThroughputMbps
+            ]
+            if let jsonData = try? JSONSerialization.data(withJSONObject: jsonDict, options: []) {
+                pingPayload = jsonData
+            }
+        }
+        
         do {
-            try transport.send(type: .ping, payload: token)
+            try transport.send(type: .ping, payload: pingPayload)
             schedulePingTimeout(for: token)
         } catch {
             cancelPendingPing()
@@ -541,6 +625,13 @@ final class HostSession: @unchecked Sendable {
 
     private func startStreaming() throws {
         guard let display, let transport else { throw SessionError.incompleteGate }
+        
+        self.lastThroughputTimeNanoseconds = DispatchTime.now().uptimeNanoseconds
+        self.lastRttMs = -1.0
+        self.lastWifiRssi = -127
+        self.lastWifiLinkSpeed = 0
+        self.lastThroughputMbps = 0.0
+        
         let streamer = CaptureEncoder(
             displayID: display.displayID, transport: transport, bitrate: bitrate, audioEnabled: audioEnabled
         )
@@ -548,8 +639,27 @@ final class HostSession: @unchecked Sendable {
             guard let self, let streamerRef else { return }
             self.stateQueue.async {
                 guard self.streamer === streamerRef else { return }
+                
+                var updatedMetrics = metrics
+                updatedMetrics.connectionMode = self.connectionMode
+                
+                let sentBytes = transport.takeSentByteCount()
+                let now = DispatchTime.now().uptimeNanoseconds
+                let elapsedSeconds = Double(now - self.lastThroughputTimeNanoseconds) / 1_000_000_000.0
+                self.lastThroughputTimeNanoseconds = now
+                
+                let throughputMbps = elapsedSeconds > 0 ? (Double(sentBytes) * 8.0 / 1_000_000.0) / elapsedSeconds : 0.0
+                self.lastThroughputMbps = throughputMbps
+                updatedMetrics.networkThroughputMbps = throughputMbps
+                
+                if self.connectionMode == .wireless {
+                    updatedMetrics.rttMs = self.lastRttMs
+                    updatedMetrics.wifiRssi = self.lastWifiRssi
+                    updatedMetrics.wifiLinkSpeedMbps = self.lastWifiLinkSpeed
+                }
+                
                 Task { @MainActor in
-                    self.onMetrics?(metrics)
+                    self.onMetrics?(updatedMetrics)
                 }
             }
         }

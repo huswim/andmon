@@ -183,6 +183,38 @@ struct PopoverView: View {
                     color: .red
                 )
             }
+            
+            if viewModel.connectionMode == .wireless {
+                HStack(spacing: 8) {
+                    metricCard(
+                        title: "Ping / Latency",
+                        value: viewModel.metrics.rttMs >= 0 ? String(format: "%.1f ms", viewModel.metrics.rttMs) : "N/A",
+                        icon: "wifi.router.fill",
+                        color: .green
+                    )
+                    metricCard(
+                        title: "Wi-Fi Signal",
+                        value: viewModel.metrics.wifiRssi != -127 ? "\(viewModel.metrics.wifiRssi) dBm" : "N/A",
+                        icon: wifiSignalIcon(rssi: viewModel.metrics.wifiRssi),
+                        color: wifiSignalColor(rssi: viewModel.metrics.wifiRssi)
+                    )
+                }
+                
+                HStack(spacing: 8) {
+                    metricCard(
+                        title: "Wi-Fi Link Speed",
+                        value: viewModel.metrics.wifiLinkSpeedMbps > 0 ? "\(viewModel.metrics.wifiLinkSpeedMbps) Mbps" : "N/A",
+                        icon: "speedometer",
+                        color: .blue
+                    )
+                    metricCard(
+                        title: "Throughput",
+                        value: String(format: "%.2f Mbps", viewModel.metrics.networkThroughputMbps),
+                        icon: "arrow.up.arrow.down",
+                        color: .teal
+                    )
+                }
+            }
         }
     }
 
@@ -394,6 +426,18 @@ struct PopoverView: View {
         } else {
             return String(format: "%.1f MB", Double(bytes) / (1024.0 * 1024.0))
         }
+    }
+    
+    private func wifiSignalIcon(rssi: Int) -> String {
+        if rssi == -127 { return "wifi.slash" }
+        return "wifi"
+    }
+
+    private func wifiSignalColor(rssi: Int) -> Color {
+        if rssi == -127 { return .gray }
+        if rssi >= -60 { return .green }
+        if rssi >= -75 { return .orange }
+        return .red
     }
 }
 

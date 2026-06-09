@@ -5,6 +5,7 @@ protocol AndmonTransport: AnyObject, Sendable {
     var onDisconnect: (@Sendable (Error) -> Void)? { get set }
     var queuedByteCount: Int { get }
     
+    func takeSentByteCount() -> Int
     func takeReplacedVideoFrameCount() -> Int
     func open() throws
     func send(type: MessageType, flags: UInt16, ptsMicros: UInt64, payload: Data) throws -> TransportSendResult

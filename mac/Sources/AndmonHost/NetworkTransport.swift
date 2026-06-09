@@ -13,6 +13,7 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
     private var sequence: UInt32 = 1
     private var queuedBytes = 0
     private var replacedVideoFrames = 0
+    private var sentBytes = 0
     private var tcpParser = FrameParser()
     
     var onFrame: (@Sendable (WireFrame) -> Void)?
@@ -24,6 +25,13 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
     
     init(tabletIP: String) {
         self.tabletIP = tabletIP
+    }
+    
+    func takeSentByteCount() -> Int {
+        lock.withLock {
+            defer { sentBytes = 0 }
+            return sentBytes
+        }
     }
     
     func takeReplacedVideoFrameCount() -> Int {
@@ -162,6 +170,8 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
         conn.send(content: bytes, completion: .contentProcessed { [weak self] error in
             if let error {
                 self?.disconnect(error)
+            } else {
+                self?.lock.withLock { self?.sentBytes += bytes.count }
             }
         })
     }
@@ -176,6 +186,8 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
             conn.send(content: chunk, completion: .contentProcessed { [weak self] error in
                 if let error {
                     self?.disconnect(error)
+                } else {
+                    self?.lock.withLock { self?.sentBytes += chunk.count }
                 }
             })
         } else {
@@ -197,6 +209,8 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
                     conn.send(content: chunk, completion: .contentProcessed { [weak self] error in
                         if let error {
                             self?.disconnect(error)
+                        } else {
+                            self?.lock.withLock { self?.sentBytes += chunk.count }
                         }
                         semaphore.signal()
                     })

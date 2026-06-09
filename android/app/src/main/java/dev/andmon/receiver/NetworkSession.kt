@@ -2,6 +2,13 @@ package dev.andmon.receiver
 
 import android.util.Log
 import android.view.Surface
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.net.wifi.WifiInfo
+import android.net.wifi.WifiManager
 import org.json.JSONObject
 import java.io.InputStream
 import java.io.OutputStream
@@ -129,6 +136,7 @@ class UdpFrameAssembler(private val onVideoLoss: () -> Unit) {
 }
 
 class NetworkSession(
+    private val context: Context,
     private val decoder: HevcSurfaceDecoder,
     private val onStatus: (String, Boolean) -> Unit,
     private val lockManager: SessionLockManager,
@@ -165,6 +173,14 @@ class NetworkSession(
     
     private var udpFrameAssembler: UdpFrameAssembler? = null
     var udpVideoDrops = 0
+    
+    @Volatile var lastHostRttMs: Double = -1.0
+    @Volatile var lastHostThroughputMbps: Double = -1.0
+    @Volatile var wifiRssi: Int = -127
+    @Volatile var wifiLinkSpeed: Int = 0
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    class WifiDetails(val rssi: Int, val linkSpeedMbps: Int)
     
     val isOpen: Boolean
         get() = connected.get()
@@ -233,6 +249,7 @@ class NetworkSession(
                 output = socket.getOutputStream()
                 lastActivityTime.set(System.currentTimeMillis())
                 connected.set(true)
+                registerWifiCallback()
                 
                 // Start auxiliary threads
                 writeQueue.clear()
@@ -397,7 +414,30 @@ class NetworkSession(
                     audioPlayer.queue(frame.payload)
                 }
             }
-            MessageType.PING -> pongWhenReady(frame.payload)
+            MessageType.PING -> {
+                var tokenBytes = frame.payload
+                try {
+                    val payloadStr = String(frame.payload, Charsets.UTF_8)
+                    if (payloadStr.startsWith("{")) {
+                        val json = JSONObject(payloadStr)
+                        val tokenStr = json.optString("token")
+                        if (tokenStr.isNotEmpty()) {
+                            tokenBytes = tokenStr.toByteArray(Charsets.UTF_8)
+                        }
+                        val rtt = json.optDouble("rtt", -1.0)
+                        val throughput = json.optDouble("throughput", -1.0)
+                        if (rtt >= 0) {
+                            lastHostRttMs = rtt
+                        }
+                        if (throughput >= 0) {
+                            lastHostThroughputMbps = throughput
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("NetworkSession", "Failed to parse PING JSON payload", e)
+                }
+                pongWhenReady(tokenBytes)
+            }
             MessageType.STOP -> {
                 onStatus("Stopped by Mac", false)
                 closeSession()
@@ -473,7 +513,20 @@ class NetworkSession(
             }
         }
         if (shouldSend) {
-            send(MessageType.PONG, payload)
+            var responsePayload = payload
+            try {
+                val tokenStr = String(payload, Charsets.UTF_8)
+                val wifiDetails = getLocalWifiDetails()
+                val json = JSONObject()
+                    .put("token", tokenStr)
+                    .put("rssi", wifiDetails.rssi)
+                    .put("linkSpeed", wifiDetails.linkSpeedMbps)
+                    .put("udpDrops", udpVideoDrops)
+                responsePayload = json.toString().toByteArray(Charsets.UTF_8)
+            } catch (e: Exception) {
+                Log.e("NetworkSession", "Failed to build PONG JSON payload", e)
+            }
+            send(MessageType.PONG, responsePayload)
         }
     }
 
@@ -535,6 +588,7 @@ class NetworkSession(
         Log.i("NetworkSession", "closeSession() cleaning up connection resources")
         
         lockManager.releaseLock(this)
+        unregisterWifiCallback()
         
         synchronized(this) {
             configured = false
@@ -578,6 +632,64 @@ class NetworkSession(
         udpSocket = null
         
         udpFrameAssembler?.reset()
+    }
+
+    private fun registerWifiCallback() {
+        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        val request = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .build()
+        
+        networkCallback = object : ConnectivityManager.NetworkCallback() {
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                val transportInfo = capabilities.transportInfo
+                if (transportInfo is android.net.wifi.WifiInfo) {
+                    wifiRssi = transportInfo.rssi
+                    wifiLinkSpeed = transportInfo.linkSpeed
+                }
+            }
+        }
+        try {
+            connectivityManager.registerNetworkCallback(request, networkCallback!!)
+        } catch (e: Exception) {
+            Log.e("NetworkSession", "Failed to register network callback", e)
+        }
+    }
+
+    private fun unregisterWifiCallback() {
+        networkCallback?.let {
+            val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            try {
+                connectivityManager?.unregisterNetworkCallback(it)
+            } catch (e: Exception) {}
+        }
+        networkCallback = null
+        wifiRssi = -127
+        wifiLinkSpeed = 0
+    }
+
+    fun getLocalWifiDetails(): WifiDetails {
+        if (wifiRssi == -127 && wifiLinkSpeed == 0) {
+            val hasFine = androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.ACCESS_FINE_LOCATION
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            val hasCoarse = androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            
+            if (hasFine || hasCoarse) {
+                try {
+                    val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                    val info = wifiManager?.connectionInfo
+                    if (info != null) {
+                        return WifiDetails(info.rssi, info.linkSpeed)
+                    }
+                } catch (e: Exception) {}
+            }
+        }
+        return WifiDetails(wifiRssi, wifiLinkSpeed)
     }
 
     fun disconnect() {

@@ -48,6 +48,8 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private var isDragMode = false
     private var isScrollActive = false
     private var longPressRunnable: Runnable? = null
+    private var lastNetActive = false
+    private var permissionRequested = false
 
     private val telemetryRunnable = object : Runnable {
         override fun run() {
@@ -93,7 +95,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
         decoder = HevcSurfaceDecoder()
         lockManager = SessionLockManager()
         session = AccessorySession(usbManager, decoder, ::showStatus, lockManager)
-        netSession = NetworkSession(decoder, ::showStatus, lockManager).apply { start() }
+        netSession = NetworkSession(applicationContext, decoder, ::showStatus, lockManager).apply { start() }
 
         // Glassmorphism transparent VSync toggle panel
         toggleCard = android.widget.LinearLayout(this).apply {
@@ -327,10 +329,19 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
         val fps = currentRendered - lastRenderFrameCount
         lastRenderFrameCount = currentRendered
 
+        val netActive = netSession.isOpen
+        if (netActive && !lastNetActive) {
+            permissionRequested = false
+        }
+        lastNetActive = netActive
+
+        if (netActive && !hasLocationPermission()) {
+            requestLocationPermissions()
+        }
+
         val decoderName = decoder.activeDecoderName
         val decodeLatency = String.format("%.2f", decoder.averageDecodeTimeMs)
         val decoderDrops = decoder.droppedFrameCount
-        val netActive = netSession.isOpen
         val transportDrops = if (netActive) netSession.udpVideoDrops else session.usbVideoDrops
         val queueDropsLabel = if (netActive) "UDP Queue Drops" else "USB Queue Drops"
         val vsync = if (decoder.vsyncEnabled) "ON (Smooth)" else "OFF (Immediate)"
@@ -339,23 +350,36 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
         val decoderOutput = decoder.outputResolution
         val surfaceResolution = "${surfaceView.width} x ${surfaceView.height}"
 
-        val content = """
-            [ telemetry HUD ]
-            • Decoder: $decoderName
-            • Connection: ${if (netActive) "Wireless (Wi-Fi)" else "Wired (USB)"}
-            • Video Resolution: $videoResolution
-            • Video Bitrate: $videoBitrate
-            • Decoder Output: $decoderOutput
-            • Surface Size: $surfaceResolution
-            • VSync Sync: $vsync
-            • Render FPS: $fps fps
-            • Decoded Frames: $currentRendered
-            • Decoder Drops: $decoderDrops
-            • $queueDropsLabel: $transportDrops
-            • Decode Latency: $decodeLatency ms
-        """.trimIndent()
+        val contentBuild = StringBuilder()
+        contentBuild.append("[ telemetry HUD ]\n")
+        contentBuild.append("• Decoder: $decoderName\n")
+        contentBuild.append("• Connection: ${if (netActive) "Wireless (Wi-Fi)" else "Wired (USB)"}\n")
+        if (netActive) {
+            val wifiDetails = netSession.getLocalWifiDetails()
+            val signalStr = if (wifiDetails.rssi == -127) "N/A" else "${wifiDetails.rssi} dBm"
+            val speedStr = if (wifiDetails.linkSpeedMbps <= 0) "N/A" else "${wifiDetails.linkSpeedMbps} Mbps"
+            val rttVal = netSession.lastHostRttMs
+            val rttStr = if (rttVal < 0) "N/A" else "${String.format("%.1f", rttVal)} ms"
+            val tpVal = netSession.lastHostThroughputMbps
+            val tpStr = if (tpVal < 0) "N/A" else "${String.format("%.2f", tpVal)} Mbps"
+            
+            contentBuild.append("• Ping / RTT: $rttStr\n")
+            contentBuild.append("• Wi-Fi Signal: $signalStr\n")
+            contentBuild.append("• Wi-Fi Speed: $speedStr\n")
+            contentBuild.append("• Network Load: $tpStr\n")
+        }
+        contentBuild.append("• Video Resolution: $videoResolution\n")
+        contentBuild.append("• Video Bitrate: $videoBitrate\n")
+        contentBuild.append("• Decoder Output: $decoderOutput\n")
+        contentBuild.append("• Surface Size: $surfaceResolution\n")
+        contentBuild.append("• VSync Sync: $vsync\n")
+        contentBuild.append("• Render FPS: $fps fps\n")
+        contentBuild.append("• Decoded Frames: $currentRendered\n")
+        contentBuild.append("• Decoder Drops: $decoderDrops\n")
+        contentBuild.append("• $queueDropsLabel: $transportDrops\n")
+        contentBuild.append("• Decode Latency: $decodeLatency ms")
 
-        telemetryText.text = content
+        telemetryText.text = contentBuild.toString()
         updateOverlayVisibility()
     }
 
@@ -539,6 +563,22 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
         } else {
             session.sendScrollEvent(dx, dy)
         }
+    }
+
+    private fun hasLocationPermission(): Boolean {
+        val fine = ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        val coarse = ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_COARSE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        return fine || coarse
+    }
+
+    private fun requestLocationPermissions() {
+        if (permissionRequested) return
+        permissionRequested = true
+        val permissions = arrayOf(
+            android.Manifest.permission.ACCESS_FINE_LOCATION,
+            android.Manifest.permission.ACCESS_COARSE_LOCATION
+        )
+        androidx.core.app.ActivityCompat.requestPermissions(this, permissions, 1001)
     }
 
     companion object {

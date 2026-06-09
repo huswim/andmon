@@ -13,11 +13,20 @@ final class USBTransport: AndmonTransport, @unchecked Sendable {
     private var replacedVideoFrames = 0
     private var pendingWrites: [PendingWrite] = []
     private var writerScheduled = false
+    private var sentBytes = 0
     var onFrame: (@Sendable (WireFrame) -> Void)?
     var onDisconnect: (@Sendable (Error) -> Void)?
 
     var queuedByteCount: Int {
         lock.withLock { queuedBytes }
+    }
+
+    func takeSentByteCount() -> Int {
+        lock.withLock {
+            let temp = sentBytes
+            sentBytes = 0
+            return temp
+        }
     }
 
     func takeReplacedVideoFrameCount() -> Int {
@@ -173,7 +182,10 @@ final class USBTransport: AndmonTransport, @unchecked Sendable {
             guard let next else { return }
             do {
                 try write(next.bytes)
-                lock.withLock { queuedBytes = max(0, queuedBytes - next.bytes.count) }
+                lock.withLock {
+                    queuedBytes = max(0, queuedBytes - next.bytes.count)
+                    sentBytes += next.bytes.count
+                }
             } catch {
                 disconnect(error)
                 return
