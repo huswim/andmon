@@ -226,6 +226,10 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
                                     longPressRunnable?.let { handler.removeCallbacks(it) }
                                     longPressRunnable = null
                                     isScrollActive = true
+                                    // Lock scrolling target by moving cursor to initial touch position first
+                                    val normStartX = (touchStartX / width).coerceIn(0f, 1f)
+                                    val normStartY = (touchStartY / height).coerceIn(0f, 1f)
+                                    session.sendTouchEvent(4, normStartX, normStartY)
                                 }
                             }
                             if (isScrollActive) {
@@ -244,7 +248,10 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
                         if (isDragMode) {
                             session.sendTouchEvent(2, normalizedX, normalizedY)
-                        } else if (!isScrollActive) {
+                        } else if (isScrollActive) {
+                            // Notify Mac that scroll touch sequence has ended so cursor can unhide
+                            session.sendTouchEvent(2, normalizedX, normalizedY)
+                        } else {
                             val normStartX = (touchStartX / width).coerceIn(0f, 1f)
                             val normStartY = (touchStartY / height).coerceIn(0f, 1f)
                             session.sendTouchEvent(0, normStartX, normStartY)

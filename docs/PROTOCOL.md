@@ -92,6 +92,14 @@ If `touchEnabled` is configured true, Android captures touch events on the displ
   * `action` is `3` (swipe scrolling).
   * `dx` and `dy` are relative pixel offsets since the last touch event.
 
+* **Mouse Move (Hover)**:
+  ```json
+  {"action":4,"x":0.5,"y":0.5}
+  ```
+  Where:
+  * `action` is `4` (cursor position update without click).
+  * `x` and `y` are normalized floats from `0.0` to `1.0`.
+
 
 ## AOA Connection Handshake & Identification
 

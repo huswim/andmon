@@ -50,6 +50,8 @@ final class HostSession: @unchecked Sendable {
     private var bitrate: Int
     private var audioEnabled = true
     private var touchEnabled = false
+    private var isCursorHidden = false
+    private var isMouseDown = false
     private var isRuntimeStopping = false
     private var stopCompletions: [@Sendable () -> Void] = []
     var onStatus: (@MainActor (HostStatus) -> Void)?
@@ -191,6 +193,9 @@ final class HostSession: @unchecked Sendable {
             return
         }
 
+        guard let display else { return }
+        let displayID = display.displayID
+
         if action == 3 {
             guard var dx = json["dx"] as? Double,
                   var dy = json["dy"] as? Double else {
@@ -208,7 +213,12 @@ final class HostSession: @unchecked Sendable {
                 dy = -dy
             }
 
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if !self.isCursorHidden {
+                    CGDisplayHideCursor(displayID)
+                    self.isCursorHidden = true
+                }
                 let event = CGEvent(
                     scrollWheelEvent2Source: nil,
                     units: .pixel,
@@ -227,14 +237,27 @@ final class HostSession: @unchecked Sendable {
             return
         }
 
-        guard let display else { return }
-        let displayID = display.displayID
         let bounds = CGDisplayBounds(displayID)
         guard bounds.width > 0 && bounds.height > 0 else { return }
 
         let globalX = bounds.origin.x + CGFloat(x) * bounds.size.width
         let globalY = bounds.origin.y + CGFloat(y) * bounds.size.height
         let point = CGPoint(x: globalX, y: globalY)
+
+        if action == 4 {
+            DispatchQueue.main.async {
+                guard let event = CGEvent(
+                    mouseEventSource: nil,
+                    mouseType: .mouseMoved,
+                    mouseCursorPosition: point,
+                    mouseButton: .left
+                ) else {
+                    return
+                }
+                event.post(tap: .cghidEventTap)
+            }
+            return
+        }
 
         let mouseType: CGEventType
         switch action {
@@ -248,8 +271,33 @@ final class HostSession: @unchecked Sendable {
             return
         }
 
-        DispatchQueue.main.async {
-            guard let event = CGEvent(mouseEventSource: nil, mouseType: mouseType, mouseCursorPosition: point, mouseButton: .left) else {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if action == 0 {
+                self.isMouseDown = true
+            }
+
+            // Always unhide cursor on touch release
+            if action == 2 && self.isCursorHidden {
+                CGDisplayShowCursor(displayID)
+                self.isCursorHidden = false
+            }
+
+            // Only post leftMouseUp if the mouse was actually pressed down (to prevent scroll release clicks)
+            if action == 2 && !self.isMouseDown {
+                return
+            }
+
+            if action == 2 {
+                self.isMouseDown = false
+            }
+
+            guard let event = CGEvent(
+                mouseEventSource: nil,
+                mouseType: mouseType,
+                mouseCursorPosition: point,
+                mouseButton: .left
+            ) else {
                 return
             }
             event.post(tap: .cghidEventTap)

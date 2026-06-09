@@ -82,4 +82,14 @@ struct WireProtocolTests {
         #expect(frames[0].type == .touch)
         #expect(frames[0].payload == payload)
     }
+
+    @Test func mouseMoveFrame() throws {
+        var parser = FrameParser()
+        let payload = Data("{\"action\":4,\"x\":0.25,\"y\":0.6}".utf8)
+        let touch = try WireFrame(type: .touch, payload: payload).encoded()
+        let frames = try parser.append(touch)
+        #expect(frames.count == 1)
+        #expect(frames[0].type == .touch)
+        #expect(frames[0].payload == payload)
+    }
 }
