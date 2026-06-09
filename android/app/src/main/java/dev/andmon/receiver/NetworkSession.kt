@@ -155,6 +155,8 @@ class NetworkSession(
     private var udpReadThread: Thread? = null
     private var decodeThread: Thread? = null
     private var watchdogThread: Thread? = null
+    private val writeQueue = java.util.concurrent.LinkedBlockingQueue<ByteArray>()
+    private var writeThread: Thread? = null
     
     private val nextSequence = AtomicLong(1L)
     private val writeLock = Any()
@@ -232,13 +234,15 @@ class NetworkSession(
                 lastActivityTime.set(System.currentTimeMillis())
                 connected.set(true)
                 
-                sendHello(TabletProfile.PANEL_WIDTH, TabletProfile.PANEL_HEIGHT)
-                onStatus("Negotiating with Mac", false)
-                
                 // Start auxiliary threads
+                writeQueue.clear()
+                writeThread = Thread({ writeLoop() }, "andmon-net-tcp-writer").also { it.start() }
                 udpReadThread = Thread({ udpReadLoop() }, "andmon-net-udp-reader").also { it.start() }
                 decodeThread = Thread({ decodeLoop() }, "andmon-net-decoder").also { it.start() }
                 watchdogThread = Thread({ watchdogLoop() }, "andmon-net-watchdog").also { it.start() }
+                
+                sendHello(TabletProfile.PANEL_WIDTH, TabletProfile.PANEL_HEIGHT)
+                onStatus("Negotiating with Mac", false)
                 
                 Log.i("NetworkSession", "Starting sequential TCP read loop on server thread")
                 // Run TCP read loop synchronously to block server thread during connection
@@ -251,6 +255,34 @@ class NetworkSession(
             }
         } finally {
             closeSession()
+        }
+    }
+
+    private fun writeLoop() {
+        Log.i("NetworkSession", "TCP Write loop started")
+        try {
+            while (connected.get() && running.get()) {
+                val bytes = try {
+                    writeQueue.poll(100, java.util.concurrent.TimeUnit.MILLISECONDS)
+                } catch (e: InterruptedException) {
+                    null
+                }
+                if (bytes == null) continue
+                
+                synchronized(writeLock) {
+                    output?.run {
+                        write(bytes)
+                        flush()
+                    }
+                }
+            }
+        } catch (error: Exception) {
+            if (connected.get()) {
+                Log.e("NetworkSession", "TCP Write loop error", error)
+                closeSession()
+            }
+        } finally {
+            Log.i("NetworkSession", "TCP Write loop exiting")
         }
     }
 
@@ -470,12 +502,7 @@ class NetworkSession(
         try {
             val seq = nextSequence.getAndIncrement()
             val bytes = WireProtocol.encode(WireFrame(type, sequence = seq, payload = payload))
-            synchronized(writeLock) {
-                output?.run {
-                    write(bytes)
-                    flush()
-                }
-            }
+            writeQueue.offer(bytes)
         } catch (error: Exception) {
             if (connected.get()) {
                 Log.e("NetworkSession", "TCP Send error", error)
@@ -521,12 +548,16 @@ class NetworkSession(
         
         tcpReadThread?.interrupt()
         tcpReadThread = null
+        writeThread?.interrupt()
+        writeThread = null
         udpReadThread?.interrupt()
         udpReadThread = null
         decodeThread?.interrupt()
         decodeThread = null
         watchdogThread?.interrupt()
         watchdogThread = null
+        
+        writeQueue.clear()
         
         synchronized(configLock) {
             decoder.close()
