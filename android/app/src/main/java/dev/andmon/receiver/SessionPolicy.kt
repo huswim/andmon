@@ -38,18 +38,44 @@ data class StreamConfig(
 }
 
 class KeyframeRecovery {
-    private var requestPending = false
+    private val requestPending = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val lastRequestTime = java.util.concurrent.atomic.AtomicLong(0)
 
     fun onVideoResult(queued: Boolean, isKeyframe: Boolean): Boolean {
-        if (queued && isKeyframe) requestPending = false
-        if (!queued && !requestPending) {
-            requestPending = true
+        if (queued && isKeyframe) {
+            requestPending.set(false)
+        }
+        if (!queued) {
+            val now = System.currentTimeMillis()
+            val lastSent = lastRequestTime.get()
+            if (requestPending.compareAndSet(false, true)) {
+                lastRequestTime.set(now)
+                return true
+            } else if (now - lastSent > 500) {
+                if (lastRequestTime.compareAndSet(lastSent, now)) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    fun onVideoLoss(): Boolean {
+        val now = System.currentTimeMillis()
+        val lastSent = lastRequestTime.get()
+        if (requestPending.compareAndSet(false, true)) {
+            lastRequestTime.set(now)
             return true
+        } else if (now - lastSent > 500) {
+            if (lastRequestTime.compareAndSet(lastSent, now)) {
+                return true
+            }
         }
         return false
     }
 
     fun reset() {
-        requestPending = false
+        requestPending.set(false)
+        lastRequestTime.set(0L)
     }
 }

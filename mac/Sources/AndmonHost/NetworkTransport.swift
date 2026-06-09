@@ -15,6 +15,8 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
     private var replacedVideoFrames = 0
     private var sentBytes = 0
     private var tcpParser = FrameParser()
+    private var pendingWrites: [PendingWrite] = []
+    private var writerScheduled = false
     
     var onFrame: (@Sendable (WireFrame) -> Void)?
     var onDisconnect: (@Sendable (Error) -> Void)?
@@ -134,13 +136,26 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
         let frame = WireFrame(type: type, flags: flags, sequence: seq, ptsMicros: ptsMicros, payload: payload)
         let bytes = try frame.encoded()
         
-        if type == .video || type == .audio {
-            sendUdp(type: type, sequence: seq, bytes: bytes)
-            return TransportSendResult(replacedVideo: false)
-        } else {
-            try sendTcp(bytes: bytes)
-            return TransportSendResult(replacedVideo: false)
+        let enqueueResult = lock.withLock { () -> (shouldScheduleWriter: Bool, replacedVideo: Bool) in
+            var replacedVideo = false
+            if type == .video {
+                for index in pendingWrites.indices.reversed() where pendingWrites[index].type == .video {
+                    queuedBytes -= pendingWrites[index].bytes.count
+                    pendingWrites.remove(at: index)
+                    replacedVideoFrames += 1
+                    replacedVideo = true
+                }
+            }
+            pendingWrites.append(PendingWrite(type: type, sequence: seq, bytes: bytes))
+            queuedBytes += bytes.count
+            guard !writerScheduled else { return (false, replacedVideo) }
+            writerScheduled = true
+            return (true, replacedVideo)
         }
+        if enqueueResult.shouldScheduleWriter {
+            writeQueue.async { [weak self] in self?.writePending() }
+        }
+        return TransportSendResult(replacedVideo: enqueueResult.replacedVideo)
     }
     
     func sendAVCC(type: MessageType, flags: UInt16, ptsMicros: UInt64, avccPayload: Data) throws -> TransportSendResult {
@@ -156,16 +171,52 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
             avccData: avccPayload
         )
         
-        if type == .video || type == .audio {
-            sendUdp(type: type, sequence: seq, bytes: bytes)
-            return TransportSendResult(replacedVideo: false)
-        } else {
-            try sendTcp(bytes: bytes)
-            return TransportSendResult(replacedVideo: false)
+        let enqueueResult = lock.withLock { () -> (shouldScheduleWriter: Bool, replacedVideo: Bool) in
+            var replacedVideo = false
+            if type == .video {
+                for index in pendingWrites.indices.reversed() where pendingWrites[index].type == .video {
+                    queuedBytes -= pendingWrites[index].bytes.count
+                    pendingWrites.remove(at: index)
+                    replacedVideoFrames += 1
+                    replacedVideo = true
+                }
+            }
+            pendingWrites.append(PendingWrite(type: type, sequence: seq, bytes: bytes))
+            queuedBytes += bytes.count
+            guard !writerScheduled else { return (false, replacedVideo) }
+            writerScheduled = true
+            return (true, replacedVideo)
+        }
+        if enqueueResult.shouldScheduleWriter {
+            writeQueue.async { [weak self] in self?.writePending() }
+        }
+        return TransportSendResult(replacedVideo: enqueueResult.replacedVideo)
+    }
+    
+    private func writePending() {
+        while true {
+            let next = lock.withLock { () -> PendingWrite? in
+                guard running, !pendingWrites.isEmpty else {
+                    writerScheduled = false
+                    return nil
+                }
+                return pendingWrites.removeFirst()
+            }
+            guard let next else { return }
+            
+            if next.type == .video || next.type == .audio {
+                sendUdpSync(type: next.type, sequence: next.sequence, bytes: next.bytes)
+            } else {
+                sendTcpSync(bytes: next.bytes)
+            }
+            
+            lock.withLock {
+                queuedBytes = max(0, queuedBytes - next.bytes.count)
+            }
         }
     }
     
-    private func sendTcp(bytes: Data) throws {
+    private func sendTcpSync(bytes: Data) {
         guard let conn = tcpConnection, lock.withLock({ running }) else { return }
         conn.send(content: bytes, completion: .contentProcessed { [weak self] error in
             if let error {
@@ -176,12 +227,11 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
         })
     }
     
-    private func sendUdp(type: MessageType, sequence: UInt32, bytes: Data) {
+    private func sendUdpSync(type: MessageType, sequence: UInt32, bytes: Data) {
         guard let conn = udpConnection, lock.withLock({ running }) else { return }
         
         let maxPayload = 1400
         if bytes.count <= maxPayload {
-            // No fragmentation needed, but we still apply ANDU framing for consistency
             let chunk = makeChunk(frameID: sequence, chunkIndex: 0, totalChunks: 1, payload: bytes)
             conn.send(content: chunk, completion: .contentProcessed { [weak self] error in
                 if let error {
@@ -190,31 +240,28 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
                     self?.lock.withLock { self?.sentBytes += chunk.count }
                 }
             })
+            usleep(200)
         } else {
-            // Fragment large payloads
             let totalChunks = Int(ceil(Double(bytes.count) / Double(maxPayload)))
-            
-            writeQueue.async { [weak self] in
-                guard let self else { return }
-                for i in 0..<totalChunks {
-                    guard self.lock.withLock({ self.running }) else { break }
-                    let offset = i * maxPayload
-                    let length = min(maxPayload, bytes.count - offset)
-                    let subdata = bytes.subdata(in: offset..<(offset + length))
-                    
-                    let chunk = self.makeChunk(frameID: sequence, chunkIndex: UInt16(i), totalChunks: UInt16(totalChunks), payload: subdata)
-                    
-                    // We send sequentially to avoid EMSGSIZE and UDP congestion issues
-                    let semaphore = DispatchSemaphore(value: 0)
-                    conn.send(content: chunk, completion: .contentProcessed { [weak self] error in
-                        if let error {
-                            self?.disconnect(error)
-                        } else {
-                            self?.lock.withLock { self?.sentBytes += chunk.count }
-                        }
-                        semaphore.signal()
-                    })
-                    _ = semaphore.wait(timeout: .now() + 0.05) // short delay/safety timeout
+            for i in 0..<totalChunks {
+                guard lock.withLock({ self.running }) else { break }
+                let offset = i * maxPayload
+                let length = min(maxPayload, bytes.count - offset)
+                let subdata = bytes.subdata(in: offset..<(offset + length))
+                
+                let chunk = makeChunk(frameID: sequence, chunkIndex: UInt16(i), totalChunks: UInt16(totalChunks), payload: subdata)
+                
+                conn.send(content: chunk, completion: .contentProcessed { [weak self] error in
+                    if let error {
+                        self?.disconnect(error)
+                    } else {
+                        self?.lock.withLock { self?.sentBytes += chunk.count }
+                    }
+                })
+                
+                // Pacing: Sleep 200 microseconds every 3 chunks (batching) to avoid OS scheduling delay overshoot
+                if (i + 1) % 3 == 0 || i == totalChunks - 1 {
+                    usleep(200)
                 }
             }
         }
@@ -241,6 +288,9 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
         lock.withLock {
             guard running else { return }
             running = false
+            pendingWrites.removeAll()
+            queuedBytes = 0
+            writerScheduled = false
         }
         
         tcpConnection?.cancel()
@@ -253,4 +303,10 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
         close()
         onDisconnect?(error)
     }
+}
+
+private struct PendingWrite {
+    let type: MessageType
+    let sequence: UInt32
+    let bytes: Data
 }

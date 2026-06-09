@@ -113,7 +113,7 @@ class UdpFrameAssembler(private val onVideoLoss: () -> Unit) {
         while (iterator.hasNext()) {
             val entry = iterator.next()
             val buf = entry.value
-            if (now - buf.createdAt > 30) { // 30ms timeout
+            if (now - buf.createdAt > 100) { // 100ms timeout
                 iterator.remove()
                 if (buf.isVideo) {
                     reportedLoss = true
@@ -217,7 +217,9 @@ class NetworkSession(
         if (running.getAndSet(true)) return
         udpFrameAssembler = UdpFrameAssembler {
             Log.d("NetworkSession", "UDP Packet loss detected, requesting keyframe")
-            send(MessageType.KEYFRAME_REQUEST)
+            if (keyframeRecovery.onVideoLoss()) {
+                send(MessageType.KEYFRAME_REQUEST)
+            }
         }
         serverThread = Thread({ serverLoop() }, "andmon-net-server").also { it.start() }
     }

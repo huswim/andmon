@@ -36,4 +36,23 @@ class SessionPolicyTest {
         assertFalse(recovery.onVideoResult(queued = true, isKeyframe = true))
         assertTrue(recovery.onVideoResult(queued = false, isKeyframe = false))
     }
+
+    @Test
+    fun requestsRetryKeyframeOnGuardTimeout() {
+        val recovery = KeyframeRecovery()
+        assertTrue(recovery.onVideoResult(queued = false, isKeyframe = false))
+        assertFalse(recovery.onVideoResult(queued = false, isKeyframe = false))
+        assertFalse(recovery.onVideoLoss())
+        
+        Thread.sleep(600)
+        
+        // After 500ms guard timeout, it should trigger another keyframe request
+        assertTrue(recovery.onVideoResult(queued = false, isKeyframe = false))
+        assertFalse(recovery.onVideoResult(queued = false, isKeyframe = false))
+        
+        Thread.sleep(600)
+        
+        // Similarly for onVideoLoss
+        assertTrue(recovery.onVideoLoss())
+    }
 }
