@@ -155,6 +155,31 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
         }
 
         surfaceView.isHapticFeedbackEnabled = true
+        surfaceView.setOnHoverListener { v, event ->
+            val config = session.activeConfig
+            if (config == null || !config.touchEnabled) {
+                return@setOnHoverListener false
+            }
+
+            val action = event.actionMasked
+            val toolType = event.getToolType(0)
+
+            if (toolType == MotionEvent.TOOL_TYPE_STYLUS) {
+                if (action == MotionEvent.ACTION_HOVER_MOVE || action == MotionEvent.ACTION_HOVER_ENTER) {
+                    val x = event.x
+                    val y = event.y
+                    val width = v.width.toFloat()
+                    val height = v.height.toFloat()
+                    if (width > 0 && height > 0) {
+                        val normalizedX = (x / width).coerceIn(0f, 1f)
+                        val normalizedY = (y / height).coerceIn(0f, 1f)
+                        session.sendTouchEvent(4, normalizedX, normalizedY)
+                    }
+                    return@setOnHoverListener true
+                }
+            }
+            false
+        }
         surfaceView.setOnTouchListener { v, event ->
             val config = session.activeConfig
             val action = event.actionMasked
