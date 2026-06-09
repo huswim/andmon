@@ -92,14 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             UserDefaults.standard.set(ip, forKey: "tabletIP")
             self?.updateSessionConfiguration()
         }
-        vm.onAutoOptimizationToggle = { [weak self] enabled in
-            UserDefaults.standard.set(enabled, forKey: "autoOptimization")
-            self?.session.setAutoOptimizationEnabled(enabled)
-        }
-        vm.onManualFecGroupSizeChange = { [weak self] size in
-            UserDefaults.standard.set(size, forKey: "manualFecGroupSize")
-            self?.session.setManualFecGroupSize(size)
-        }
+
         
         vm.bitrateMbps = Double(Self.migrateBitrate(in: .standard)) / 1_000_000.0
         vm.maxFrameRate = Self.migrateMaxFrameRate(in: .standard)
@@ -110,12 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         vm.connectionMode = ConnectionMode(rawValue: modeRaw) ?? .wired
         vm.tabletIP = UserDefaults.standard.string(forKey: "tabletIP") ?? "192.168.35.2"
         
-        let autoOpt = UserDefaults.standard.object(forKey: "autoOptimization") as? Bool ?? true
-        let manualFec = UserDefaults.standard.integer(forKey: "manualFecGroupSize")
-        vm.autoOptimizationEnabled = autoOpt
-        vm.fecGroupSize = manualFec
-        session.setAutoOptimizationEnabled(autoOpt)
-        session.setManualFecGroupSize(manualFec)
+
 
         session.onStatus = { [weak self] status in
             self?.viewModel?.status = status

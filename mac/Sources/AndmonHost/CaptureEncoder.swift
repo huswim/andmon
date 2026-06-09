@@ -8,7 +8,7 @@ import AudioToolbox
 import AVFoundation
 
 final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
-    static let defaultBitrate = 12_000_000
+    static let defaultBitrate = 15_000_000
     static let defaultMaxFrameRate = 60
     static let allowedMaxFrameRates = [60, 90, 120]
     private static let maxInFlightFrames = 2

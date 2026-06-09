@@ -18,14 +18,7 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
     private var pendingWrites: [PendingWrite] = []
     private var writerScheduled = false
     
-    private let fecEncoder = FECEncoder()
     private var tcpTimeoutWork: DispatchWorkItem?
-    
-    // Configured parameters (updated dynamically by NetworkQualityMonitor or PopoverView)
-    var autoOptimizationEnabled: Bool = true
-    var fecType: UInt8 = 1
-    var fecGroupSize: UInt8 = 5
-    var pacingIntervalMicroseconds: UInt32 = 200
     
     var onFrame: (@Sendable (WireFrame) -> Void)?
     var onDisconnect: (@Sendable (Error) -> Void)?
@@ -293,32 +286,19 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
             }
         }
         
-        let localFecType = lock.withLock { self.fecType }
-        let localFecGroupSize = lock.withLock { self.fecGroupSize }
-        let pacingInterval = lock.withLock { self.pacingIntervalMicroseconds }
-        
-        let finalChunks: [Data]
-        if localFecType == 1 && localFecGroupSize > 0 {
-            finalChunks = fecEncoder.encode(dataChunks: dataChunks, groupSize: Int(localFecGroupSize))
-        } else {
-            finalChunks = dataChunks
-        }
-        
-        let numData = dataChunks.count
-        let totalCount = finalChunks.count
+        let totalCount = dataChunks.count
         
         for i in 0..<totalCount {
             guard lock.withLock({ self.running }) else { break }
-            let payload = finalChunks[i]
-            let isParity = i >= numData
+            let payload = dataChunks[i]
             
             let chunk = makeChunk(
                 frameID: sequence,
                 chunkIndex: UInt16(i),
                 totalChunks: UInt16(totalCount),
-                fecType: localFecType,
-                fecGroupSize: localFecGroupSize,
-                isParity: isParity,
+                fecType: 0,
+                fecGroupSize: 0,
+                isParity: false,
                 payload: payload
             )
             
@@ -329,11 +309,6 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
                     self?.lock.withLock { self?.sentBytes += chunk.count }
                 }
             })
-            
-            // Pacing every 3 chunks
-            if (i + 1) % 3 == 0 || i == totalCount - 1 {
-                usleep(pacingInterval)
-            }
         }
     }
     
@@ -381,33 +356,7 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
         }
     }
     
-    func updateAutoOptimization(enabled: Bool) {
-        lock.withLock {
-            self.autoOptimizationEnabled = enabled
-            if !enabled {
-                self.fecType = 1
-                self.fecGroupSize = 5
-                self.pacingIntervalMicroseconds = 200
-            }
-        }
-    }
-    
-    func updateManualFec(size: Int) {
-        lock.withLock {
-            self.fecGroupSize = UInt8(size)
-            if size == 0 {
-                self.fecType = 0
-            } else {
-                self.fecType = 1
-            }
-        }
-    }
-    
-    func updatePacingInterval(_ interval: UInt32) {
-        lock.withLock {
-            self.pacingIntervalMicroseconds = interval
-        }
-    }
+
     
     func close() {
         lock.withLock {

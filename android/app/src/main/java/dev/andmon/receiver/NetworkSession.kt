@@ -29,8 +29,6 @@ class UdpFrameAssembler(private val onVideoLoss: () -> Unit) {
     private val buffers = ConcurrentHashMap<Long, FrameBuffer>()
     private val checkTimer = java.util.Timer("andu-cleanup-timer", true)
 
-    val fecRecoveryCount = AtomicLong(0)
-    val fecFailureCount = AtomicLong(0)
     val totalUdpPacketsExpected = AtomicLong(0)
     val totalUdpPacketsLost = AtomicLong(0)
     private var lastLossResetTime = System.currentTimeMillis()
@@ -43,22 +41,12 @@ class UdpFrameAssembler(private val onVideoLoss: () -> Unit) {
         }, 10, 10)
     }
 
-    class FrameBuffer(val totalChunks: Int, val numData: Int, val groupSize: Int) {
+    class FrameBuffer(val totalChunks: Int) {
+        val numData = totalChunks
         val createdAt = System.currentTimeMillis()
         val chunks = arrayOfNulls<ByteArray>(totalChunks)
         var receivedCount = 0
         var isVideo = false
-    }
-
-    fun calculateDataChunks(totalChunks: Int, groupSize: Int): Int {
-        if (groupSize <= 0) return totalChunks
-        for (d in 1..totalChunks) {
-            val p = (d + groupSize - 1) / groupSize
-            if (d + p == totalChunks) {
-                return d
-            }
-        }
-        return totalChunks
     }
 
     fun handleChunk(packetData: ByteArray, length: Int): ByteArray? {
@@ -86,11 +74,9 @@ class UdpFrameAssembler(private val onVideoLoss: () -> Unit) {
         val payload = ByteArray(payloadSize)
         System.arraycopy(packetData, 16, payload, 0, payloadSize)
 
-        val numData = calculateDataChunks(totalChunks, fecGroupSize)
-
         val frameBuf = buffers.computeIfAbsent(frameID) {
             totalUdpPacketsExpected.addAndGet(totalChunks.toLong())
-            FrameBuffer(totalChunks, numData, fecGroupSize)
+            FrameBuffer(totalChunks)
         }
 
         synchronized(frameBuf) {
@@ -105,15 +91,6 @@ class UdpFrameAssembler(private val onVideoLoss: () -> Unit) {
                         frameBuf.isVideo = true
                     }
                 }
-                
-                // Attempt FEC recovery if FEC is active
-                if (fecType == 1 && fecGroupSize > 0) {
-                    val g = if (chunkIndex < numData) chunkIndex / fecGroupSize else chunkIndex - numData
-                    val numParity = (numData + fecGroupSize - 1) / fecGroupSize
-                    if (g in 0 until numParity) {
-                        attemptFecRecoveryForGroup(frameBuf, g, fecGroupSize, numData)
-                    }
-                }
 
                 if (isComplete(frameBuf)) {
                     buffers.remove(frameID)
@@ -125,79 +102,15 @@ class UdpFrameAssembler(private val onVideoLoss: () -> Unit) {
     }
 
     private fun isComplete(frameBuf: FrameBuffer): Boolean {
-        for (i in 0 until frameBuf.numData) {
+        for (i in 0 until frameBuf.totalChunks) {
             if (frameBuf.chunks[i] == null) return false
         }
         return true
     }
 
-    private fun attemptFecRecoveryForGroup(frameBuf: FrameBuffer, g: Int, groupSize: Int, numData: Int) {
-        val start = g * groupSize
-        val end = minOf(start + groupSize, numData)
-        val pIndex = numData + g
-        
-        // Check if parity chunk is present
-        val parityPayload = frameBuf.chunks[pIndex] ?: return
-        
-        var missingIndex = -1
-        var missingCount = 0
-        for (i in start until end) {
-            if (frameBuf.chunks[i] == null) {
-                missingIndex = i
-                missingCount++
-                if (missingCount > 1) {
-                    // FEC cannot recover if more than 1 chunk is missing in the group
-                    return
-                }
-            }
-        }
-        
-        if (missingCount == 1) {
-            // Exactly one missing chunk, recover it!
-            try {
-                val recovered = parityPayload.clone()
-                for (i in start until end) {
-                    if (i != missingIndex) {
-                        val chunk = frameBuf.chunks[i]!!
-                        val len = chunk.size
-                        val lenByte0 = (len shr 8 and 0xff).toByte()
-                        val lenByte1 = (len and 0xff).toByte()
-                        
-                        recovered[0] = (recovered[0].toInt() xor lenByte0.toInt()).toByte()
-                        recovered[1] = (recovered[1].toInt() xor lenByte1.toInt()).toByte()
-                        
-                        for (j in 0 until len) {
-                            recovered[2 + j] = (recovered[2 + j].toInt() xor chunk[j].toInt()).toByte()
-                        }
-                    }
-                }
-                
-                val len = ((recovered[0].toInt() and 0xff) shl 8) or (recovered[1].toInt() and 0xff)
-                if (len in 0..1400 && 2 + len <= recovered.size) {
-                    val recoveredPayload = ByteArray(len)
-                    System.arraycopy(recovered, 2, recoveredPayload, 0, len)
-                    frameBuf.chunks[missingIndex] = recoveredPayload
-                    frameBuf.receivedCount++
-                    fecRecoveryCount.incrementAndGet()
-                    
-                    if (missingIndex == 0 && len >= 6) {
-                        val msgType = recoveredPayload[5].toInt() and 0xff
-                        if (msgType == MessageType.VIDEO.value) {
-                            frameBuf.isVideo = true
-                        }
-                    }
-                } else {
-                    fecFailureCount.incrementAndGet()
-                }
-            } catch (e: Exception) {
-                fecFailureCount.incrementAndGet()
-            }
-        }
-    }
-
     private fun reassemble(frameBuf: FrameBuffer): ByteArray {
         var totalBytes = 0
-        for (i in 0 until frameBuf.numData) {
+        for (i in 0 until frameBuf.totalChunks) {
             totalBytes += frameBuf.chunks[i]?.size ?: 0
         }
         val result = ByteArray(totalBytes)
@@ -252,8 +165,6 @@ class UdpFrameAssembler(private val onVideoLoss: () -> Unit) {
         buffers.clear()
         totalUdpPacketsExpected.set(0)
         totalUdpPacketsLost.set(0)
-        fecRecoveryCount.set(0)
-        fecFailureCount.set(0)
     }
     
     fun shutdown() {
@@ -685,13 +596,12 @@ class NetworkSession(
                 val tokenStr = String(payload, Charsets.UTF_8)
                 val wifiDetails = getLocalWifiDetails()
                 val lossRate = udpFrameAssembler?.getPacketLossRate() ?: 0.0
-                val fecRecoveries = udpFrameAssembler?.fecRecoveryCount?.get() ?: 0L
                 val json = JSONObject()
                     .put("token", tokenStr)
                     .put("rssi", wifiDetails.rssi)
                     .put("linkSpeed", wifiDetails.linkSpeedMbps)
                     .put("udpDrops", udpVideoDrops)
-                    .put("fecRecoveries", fecRecoveries)
+                    .put("fecRecoveries", 0L)
                     .put("packetLossRate", lossRate)
                 responsePayload = json.toString().toByteArray(Charsets.UTF_8)
             } catch (e: Exception) {
