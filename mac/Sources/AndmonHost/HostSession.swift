@@ -219,7 +219,7 @@ final class HostSession: @unchecked Sendable {
             }
 
             // Scale deltas down to compensate for macOS scroll acceleration and match finger speed
-            let sensitivity = 0.25
+            let sensitivity = 0.3
             dx *= sensitivity
             dy *= sensitivity
 
@@ -244,10 +244,14 @@ final class HostSession: @unchecked Sendable {
                     scrollWheelEvent2Source: nil,
                     units: .pixel,
                     wheelCount: 2,
-                    wheel1: Int32(dy),
-                    wheel2: Int32(dx),
+                    wheel1: 0,
+                    wheel2: 0,
                     wheel3: 0
                 )
+                event?.setDoubleValueField(.scrollWheelEventDeltaAxis1, value: dy)
+                event?.setDoubleValueField(.scrollWheelEventDeltaAxis2, value: dx)
+                event?.setIntegerValueField(.scrollWheelEventFixedPtDeltaAxis1, value: Int64(dy * 65536.0))
+                event?.setIntegerValueField(.scrollWheelEventFixedPtDeltaAxis2, value: Int64(dx * 65536.0))
                 event?.post(tap: .cghidEventTap)
             }
             return
