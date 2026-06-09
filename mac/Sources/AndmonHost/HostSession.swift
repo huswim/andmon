@@ -547,7 +547,7 @@ final class HostSession: @unchecked Sendable {
             }
         }
         pingTimeoutWorkItem = workItem
-        stateQueue.asyncAfter(deadline: .now() + 3, execute: workItem)
+        stateQueue.asyncAfter(deadline: .now() + 5, execute: workItem)
     }
 
     private func waitForReceiver(using transport: AndmonTransport) {

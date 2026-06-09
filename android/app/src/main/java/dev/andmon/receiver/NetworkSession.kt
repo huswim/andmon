@@ -720,7 +720,7 @@ class NetworkSession(
             while (connected.get()) {
                 Thread.sleep(1000)
                 if (!connected.get()) break
-                if (System.currentTimeMillis() - lastActivityTime.get() > 5000) {
+                if (System.currentTimeMillis() - lastActivityTime.get() > 8000) {
                     if (connected.get()) {
                         onStatus("Connection timeout", false)
                         closeSession()
