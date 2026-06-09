@@ -12,7 +12,7 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
     private static let maxInFlightFrames = 2
 
     private let displayID: CGDirectDisplayID
-    private let transport: USBTransport
+    private let transport: AndmonTransport
     private let bitrate: Int
     private let audioEnabled: Bool
     private let captureQueue = DispatchQueue(label: "dev.andmon.capture")
@@ -42,7 +42,7 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
     private var totalAudioFramesEncoded: Int64 = 0
     private var debugAudioCount = 0
 
-    init(displayID: CGDirectDisplayID, transport: USBTransport, bitrate: Int, audioEnabled: Bool) {
+    init(displayID: CGDirectDisplayID, transport: AndmonTransport, bitrate: Int, audioEnabled: Bool) {
         self.displayID = displayID
         self.transport = transport
         self.bitrate = bitrate

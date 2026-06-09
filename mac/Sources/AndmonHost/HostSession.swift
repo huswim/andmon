@@ -14,6 +14,11 @@ private func CGSSetConnectionProperty(
     _ value: CFTypeRef
 ) -> Int32
 
+enum ConnectionMode: String, Codable, Sendable {
+    case wired
+    case wireless
+}
+
 struct SessionMetrics: Sendable, Equatable {
     var capturedFPS: Int = 0
     var encodedFPS: Int = 0
@@ -48,7 +53,9 @@ enum HostStatus: Equatable {
 
 final class HostSession: @unchecked Sendable {
     private let stateQueue = DispatchQueue(label: "dev.andmon.session")
-    private var transport: USBTransport?
+    private var transport: AndmonTransport?
+    private var connectionMode: ConnectionMode = .wired
+    private var tabletIP: String = ""
     private var display: VirtualDisplay?
     private var streamer: CaptureEncoder?
     private var pingToken: Data?
@@ -138,10 +145,29 @@ final class HostSession: @unchecked Sendable {
         }
     }
 
+    func configure(mode: ConnectionMode, tabletIP: String) {
+        stateQueue.async { [weak self] in
+            guard let self else { return }
+            let modeChanged = self.connectionMode != mode
+            let ipChanged = self.tabletIP != tabletIP
+            self.connectionMode = mode
+            self.tabletIP = tabletIP
+            if (modeChanged || ipChanged) && !self.manuallyStopped {
+                fputs("Reconfiguring session: mode=\(mode), ip=\(tabletIP)\n", stderr)
+                self.resume()
+            }
+        }
+    }
+
     private func connect() {
         guard !manuallyStopped, transport == nil else { return }
         publish(.negotiating)
-        let transport = USBTransport()
+        let transport: AndmonTransport
+        if connectionMode == .wired {
+            transport = USBTransport()
+        } else {
+            transport = NetworkTransport(tabletIP: tabletIP)
+        }
         transport.onFrame = { [weak self, weak transport] frame in
             guard let self, let transport else { return }
             stateQueue.async {
@@ -352,7 +378,7 @@ final class HostSession: @unchecked Sendable {
         try sendConfigurationAndPing(using: transport)
     }
 
-    private func restartEncoder(using transport: USBTransport) {
+    private func restartEncoder(using transport: AndmonTransport) {
         guard !restartingEncoder else { return }
         cancelHeartbeat()
         cancelPendingPing()
@@ -369,7 +395,7 @@ final class HostSession: @unchecked Sendable {
         }
     }
 
-    private func renegotiateStreaming(using transport: USBTransport) {
+    private func renegotiateStreaming(using transport: AndmonTransport) {
         do {
             if display == nil {
                 display = try VirtualDisplay()
@@ -380,7 +406,7 @@ final class HostSession: @unchecked Sendable {
         }
     }
 
-    private func sendConfigurationAndPing(using transport: USBTransport?) throws {
+    private func sendConfigurationAndPing(using transport: AndmonTransport?) throws {
         guard let transport else { throw SessionError.incompleteGate }
         let config: [String: Any] = [
             "width": 2960, "height": 1848, "fps": 60,
@@ -392,7 +418,7 @@ final class HostSession: @unchecked Sendable {
         try sendPing(using: transport, purpose: .negotiation)
     }
 
-    private func sendPing(using transport: USBTransport, purpose: PingPurpose) throws {
+    private func sendPing(using transport: AndmonTransport, purpose: PingPurpose) throws {
         let token = Data(UUID().uuidString.utf8)
         pingToken = token
         pingPurpose = purpose
@@ -440,7 +466,7 @@ final class HostSession: @unchecked Sendable {
         stateQueue.asyncAfter(deadline: .now() + 3, execute: workItem)
     }
 
-    private func waitForReceiver(using transport: USBTransport) {
+    private func waitForReceiver(using transport: AndmonTransport) {
         guard !restartingEncoder, !receiverWaiting else { return }
         cancelHeartbeat()
         cancelPendingPing()
@@ -458,7 +484,7 @@ final class HostSession: @unchecked Sendable {
         }
     }
 
-    private func probeReceiver(using transport: USBTransport) {
+    private func probeReceiver(using transport: AndmonTransport) {
         guard receiverWaiting, pingToken == nil else { return }
         do {
             try sendPing(using: transport, purpose: .recovery)

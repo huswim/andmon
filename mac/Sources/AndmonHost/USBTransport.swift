@@ -1,7 +1,7 @@
 import Foundation
 import VirtualDisplayBridge
 
-final class USBTransport: @unchecked Sendable {
+final class USBTransport: AndmonTransport, @unchecked Sendable {
     private let writeQueue = DispatchQueue(label: "dev.andmon.usb.writer")
     private let readQueue = DispatchQueue(label: "dev.andmon.usb.reader")
     private let lock = NSCondition()
@@ -42,7 +42,7 @@ final class USBTransport: @unchecked Sendable {
     @discardableResult
     func send(
         type: MessageType, flags: UInt16 = 0, ptsMicros: UInt64 = 0, payload: Data = Data()
-    ) throws -> USBTransportSendResult {
+    ) throws -> TransportSendResult {
         let frame = lock.withLock { () -> WireFrame in
             defer { sequence &+= 1 }
             return WireFrame(type: type, flags: flags, sequence: sequence, ptsMicros: ptsMicros, payload: payload)
@@ -67,13 +67,13 @@ final class USBTransport: @unchecked Sendable {
         if enqueueResult.shouldScheduleWriter {
             writeQueue.async { [weak self] in self?.writePending() }
         }
-        return USBTransportSendResult(replacedVideo: enqueueResult.replacedVideo)
+        return TransportSendResult(replacedVideo: enqueueResult.replacedVideo)
     }
 
     @discardableResult
     func sendAVCC(
         type: MessageType, flags: UInt16 = 0, ptsMicros: UInt64 = 0, avccPayload: Data
-    ) throws -> USBTransportSendResult {
+    ) throws -> TransportSendResult {
         let bytes = try lock.withLock { () -> Data in
             defer { sequence &+= 1 }
             return try WireFrame.encodeWithAVCCtoAnnexB(
@@ -103,7 +103,7 @@ final class USBTransport: @unchecked Sendable {
         if enqueueResult.shouldScheduleWriter {
             writeQueue.async { [weak self] in self?.writePending() }
         }
-        return USBTransportSendResult(replacedVideo: enqueueResult.replacedVideo)
+        return TransportSendResult(replacedVideo: enqueueResult.replacedVideo)
     }
 
     func close() {
@@ -200,14 +200,6 @@ final class USBTransport: @unchecked Sendable {
     private func disconnect(_ error: Error) {
         close()
         onDisconnect?(error)
-    }
-}
-
-struct USBTransportSendResult {
-    let replacedVideo: Bool
-
-    func acceptedForDecoder(isKeyframe: Bool) -> Bool {
-        !replacedVideo || isKeyframe
     }
 }
 

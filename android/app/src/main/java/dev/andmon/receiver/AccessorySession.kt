@@ -16,6 +16,7 @@ class AccessorySession(
     private val usbManager: UsbManager,
     private val decoder: HevcSurfaceDecoder,
     private val onStatus: (String, Boolean) -> Unit,
+    private val lockManager: SessionLockManager,
 ) {
     private var descriptor: ParcelFileDescriptor? = null
     private var input: FileInputStream? = null
@@ -237,6 +238,11 @@ class AccessorySession(
             }
         }
         if (needsConfig) {
+            if (!lockManager.acquireLock(this)) {
+                Log.i("AccessorySession", "Lock busy, rejecting configure")
+                reject("Wired display busy (Wireless active)")
+                return
+            }
             configureDecoderIfReady()
         }
     }
@@ -337,6 +343,7 @@ class AccessorySession(
 
     fun close() {
         if (!running.getAndSet(false)) return
+        lockManager.releaseLock(this)
         synchronized(this) {
             configured = false
             streamConfig = null

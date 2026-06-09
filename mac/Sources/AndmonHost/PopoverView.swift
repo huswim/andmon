@@ -9,6 +9,8 @@ final class SessionViewModel {
     var bitrateMbps: Double = 12.0
     var audioEnabled = true
     var touchEnabled = false
+    var connectionMode: ConnectionMode = .wired
+    var tabletIP: String = ""
 
     var onResume: (() -> Void)?
     var onStop: (() -> Void)?
@@ -16,6 +18,8 @@ final class SessionViewModel {
     var onBitrateChange: ((Int) -> Void)?
     var onAudioToggle: ((Bool) -> Void)?
     var onTouchToggle: ((Bool) -> Void)?
+    var onModeChange: ((ConnectionMode) -> Void)?
+    var onIPChange: ((String) -> Void)?
 }
 
 struct PopoverView: View {
@@ -26,6 +30,13 @@ struct PopoverView: View {
         VStack(spacing: 16) {
             // Header: Status Card
             statusCard
+
+            // Connection Mode Picker
+            connectionModeSection
+            
+            if viewModel.connectionMode == .wireless {
+                ipAddressSection
+            }
 
             // Metrics Section (Only show details when relevant, or show zeroed metrics beautifully)
             metricsSection
@@ -51,6 +62,46 @@ struct PopoverView: View {
             VisualEffectView(material: .hudWindow, blendingMode: .withinWindow, state: .active)
         )
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    // MARK: - Connection Mode Section
+    private var connectionModeSection: some View {
+        Picker("Connection Mode", selection: Binding(
+            get: { viewModel.connectionMode },
+            set: { newValue in
+                viewModel.connectionMode = newValue
+                viewModel.onModeChange?(newValue)
+            }
+        )) {
+            Text("Wired (USB)").tag(ConnectionMode.wired)
+            Text("Wireless").tag(ConnectionMode.wireless)
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal, 4)
+    }
+
+    // MARK: - IP Address Section
+    private var ipAddressSection: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "wifi")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.blue)
+            Text("IP:")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.primary)
+            
+            TextField("e.g. 192.168.1.15", text: Binding(
+                get: { viewModel.tabletIP },
+                set: { newValue in
+                    viewModel.tabletIP = newValue
+                    viewModel.onIPChange?(newValue)
+                }
+            ))
+            .textFieldStyle(.roundedBorder)
+            .font(.system(size: 11, weight: .regular, design: .monospaced))
+            .frame(maxWidth: .infinity)
+        }
+        .padding(.horizontal, 4)
     }
 
     // MARK: - Status Card

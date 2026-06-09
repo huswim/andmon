@@ -19,7 +19,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let bitrate = Self.migrateBitrate(in: .standard)
         let audioEnabled = UserDefaults.standard.object(forKey: "audioEnabled") as? Bool ?? true
         let touchEnabled = UserDefaults.standard.object(forKey: "touchEnabled") as? Bool ?? false
+        let modeRaw = UserDefaults.standard.string(forKey: "connectionMode") ?? ""
+        let mode = ConnectionMode(rawValue: modeRaw) ?? .wired
+        let tabletIP = UserDefaults.standard.string(forKey: "tabletIP") ?? "192.168.35.2"
         session = HostSession(bitrate: bitrate, audioEnabled: audioEnabled, touchEnabled: touchEnabled)
+        session.configure(mode: mode, tabletIP: tabletIP)
         super.init()
     }
 
@@ -54,9 +58,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             UserDefaults.standard.set(enabled, forKey: "touchEnabled")
             self?.session.setTouchEnabled(enabled)
         }
+        vm.onModeChange = { [weak self] mode in
+            UserDefaults.standard.set(mode.rawValue, forKey: "connectionMode")
+            self?.updateSessionConfiguration()
+        }
+        vm.onIPChange = { [weak self] ip in
+            UserDefaults.standard.set(ip, forKey: "tabletIP")
+            self?.updateSessionConfiguration()
+        }
+        
         vm.bitrateMbps = Double(Self.migrateBitrate(in: .standard)) / 1_000_000.0
         vm.audioEnabled = UserDefaults.standard.object(forKey: "audioEnabled") as? Bool ?? true
         vm.touchEnabled = UserDefaults.standard.object(forKey: "touchEnabled") as? Bool ?? false
+        let modeRaw = UserDefaults.standard.string(forKey: "connectionMode") ?? ""
+        vm.connectionMode = ConnectionMode(rawValue: modeRaw) ?? .wired
+        vm.tabletIP = UserDefaults.standard.string(forKey: "tabletIP") ?? "192.168.35.2"
 
         session.onStatus = { [weak self] status in
             self?.viewModel?.status = status
@@ -146,6 +162,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pulseTimer?.invalidate()
         pulseTimer = nil
         item.button?.alphaValue = 1.0
+    }
+
+    private func updateSessionConfiguration() {
+        guard let vm = viewModel else { return }
+        session.configure(mode: vm.connectionMode, tabletIP: vm.tabletIP)
     }
 
     private func resume() { session.resume() }

@@ -11,6 +11,7 @@ import android.graphics.Point
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.view.Gravity
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -22,11 +23,16 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.appcompat.widget.SwitchCompat
+import java.net.NetworkInterface
+import java.net.InetAddress
+import java.util.Collections
 
 class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private lateinit var usbManager: UsbManager
     private lateinit var decoder: HevcSurfaceDecoder
+    private lateinit var lockManager: SessionLockManager
     private lateinit var session: AccessorySession
+    private lateinit var netSession: NetworkSession
     private lateinit var status: TextView
     private lateinit var surfaceView: SurfaceView
     private lateinit var toggleCard: android.widget.LinearLayout
@@ -85,7 +91,9 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
         usbManager = getSystemService(USB_SERVICE) as UsbManager
         decoder = HevcSurfaceDecoder()
-        session = AccessorySession(usbManager, decoder, ::showStatus)
+        lockManager = SessionLockManager()
+        session = AccessorySession(usbManager, decoder, ::showStatus, lockManager)
+        netSession = NetworkSession(decoder, ::showStatus, lockManager).apply { start() }
 
         // Glassmorphism transparent VSync toggle panel
         toggleCard = android.widget.LinearLayout(this).apply {
@@ -156,7 +164,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
         surfaceView.isHapticFeedbackEnabled = true
         surfaceView.setOnHoverListener { v, event ->
-            val config = session.activeConfig
+            val config = getActiveConfig()
             if (config == null || !config.touchEnabled) {
                 return@setOnHoverListener false
             }
@@ -173,7 +181,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     if (width > 0 && height > 0) {
                         val normalizedX = (x / width).coerceIn(0f, 1f)
                         val normalizedY = (y / height).coerceIn(0f, 1f)
-                        session.sendTouchEvent(4, normalizedX, normalizedY)
+                        sendTouchEvent(4, normalizedX, normalizedY)
                     }
                     return@setOnHoverListener true
                 }
@@ -181,7 +189,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
             false
         }
         surfaceView.setOnTouchListener { v, event ->
-            val config = session.activeConfig
+            val config = getActiveConfig()
             val action = event.actionMasked
 
             if (config == null || !config.touchEnabled) {
@@ -233,7 +241,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
                             v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
                             val normStartX = (touchStartX / width).coerceIn(0f, 1f)
                             val normStartY = (touchStartY / height).coerceIn(0f, 1f)
-                            session.sendTouchEvent(0, normStartX, normStartY)
+                            sendTouchEvent(0, normStartX, normStartY)
                         }
                         longPressRunnable = runnable
                         handler.postDelayed(runnable, 500)
@@ -244,7 +252,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
                         val touchSlop = android.view.ViewConfiguration.get(this@MainActivity).scaledTouchSlop.toFloat()
 
                         if (isDragMode) {
-                            session.sendTouchEvent(1, normalizedX, normalizedY)
+                            sendTouchEvent(1, normalizedX, normalizedY)
                         } else {
                             if (!isScrollActive) {
                                 if (distance > touchSlop) {
@@ -254,13 +262,13 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
                                     // Lock scrolling target by moving cursor to initial touch position first
                                     val normStartX = (touchStartX / width).coerceIn(0f, 1f)
                                     val normStartY = (touchStartY / height).coerceIn(0f, 1f)
-                                    session.sendTouchEvent(4, normStartX, normStartY)
+                                    sendTouchEvent(4, normStartX, normStartY)
                                 }
                             }
                             if (isScrollActive) {
                                 val dx = x - touchLastX
                                 val dy = y - touchLastY
-                                session.sendScrollEvent(dx, dy)
+                                sendScrollEvent(dx, dy)
                             }
                         }
                         touchLastX = x
@@ -272,15 +280,15 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
                         longPressRunnable = null
 
                         if (isDragMode) {
-                            session.sendTouchEvent(2, normalizedX, normalizedY)
+                            sendTouchEvent(2, normalizedX, normalizedY)
                         } else if (isScrollActive) {
                             // Notify Mac that scroll touch sequence has ended so cursor can unhide
-                            session.sendTouchEvent(2, normalizedX, normalizedY)
+                            sendTouchEvent(2, normalizedX, normalizedY)
                         } else {
                             val normStartX = (touchStartX / width).coerceIn(0f, 1f)
                             val normStartY = (touchStartY / height).coerceIn(0f, 1f)
-                            session.sendTouchEvent(0, normStartX, normStartY)
-                            session.sendTouchEvent(2, normStartX, normStartY)
+                            sendTouchEvent(0, normStartX, normStartY)
+                            sendTouchEvent(2, normStartX, normStartY)
                         }
                         isDragMode = false
                         isScrollActive = false
@@ -322,16 +330,19 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
         val decoderName = decoder.activeDecoderName
         val decodeLatency = String.format("%.2f", decoder.averageDecodeTimeMs)
         val decoderDrops = decoder.droppedFrameCount
-        val usbDrops = session.usbVideoDrops
+        val netActive = netSession.isOpen
+        val transportDrops = if (netActive) netSession.udpVideoDrops else session.usbVideoDrops
+        val queueDropsLabel = if (netActive) "UDP Queue Drops" else "USB Queue Drops"
         val vsync = if (decoder.vsyncEnabled) "ON (Smooth)" else "OFF (Immediate)"
-        val videoResolution = session.videoResolution
-        val videoBitrate = session.videoBitrate
+        val videoResolution = if (netActive) netSession.videoResolution else session.videoResolution
+        val videoBitrate = if (netActive) netSession.videoBitrate else session.videoBitrate
         val decoderOutput = decoder.outputResolution
         val surfaceResolution = "${surfaceView.width} x ${surfaceView.height}"
 
         val content = """
             [ telemetry HUD ]
             • Decoder: $decoderName
+            • Connection: ${if (netActive) "Wireless (Wi-Fi)" else "Wired (USB)"}
             • Video Resolution: $videoResolution
             • Video Bitrate: $videoBitrate
             • Decoder Output: $decoderOutput
@@ -340,7 +351,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
             • Render FPS: $fps fps
             • Decoded Frames: $currentRendered
             • Decoder Drops: $decoderDrops
-            • USB Queue Drops: $usbDrops
+            • $queueDropsLabel: $transportDrops
             • Decode Latency: $decodeLatency ms
         """.trimIndent()
 
@@ -355,6 +366,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
     }
 
     private fun reconnectAttachedAccessory() {
+        if (netSession.isOpen) return
         if (!session.isOpen) usbManager.accessoryList?.firstOrNull()?.let(::requestOrOpen)
     }
 
@@ -418,7 +430,15 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
         if (message == "Waiting for display surface" && surfaceView.holder.surface.isValid) {
             return@runOnUiThread
         }
-        status.text = message
+        
+        var displayMsg = message
+        if (!isStreaming) {
+            val ips = getLocalIpAddresses()
+            val ipStr = if (ips.isEmpty()) "No Network Connection" else ips.joinToString("\n• ")
+            displayMsg = "$message\n\n• USB Accessory: Connect cable\n• $ipStr"
+        }
+        
+        status.text = displayMsg
         status.visibility = if (isStreaming) View.GONE else View.VISIBLE
         updateOverlayVisibility()
         if (isStreaming) {
@@ -438,7 +458,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 window.clearFlags(WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
             }
         }
-        if (message == "Waiting for USB cable" || message == "Connection timeout") {
+        if (message == "Waiting for USB cable" || message == "Connection timeout" || message == "Waiting for connection") {
             handler.postDelayed({
                 reconnectAttachedAccessory()
             }, 1000)
@@ -447,25 +467,79 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         session.updateSurface(holder.surface)
+        netSession.updateSurface(holder.surface)
         reconnectAttachedAccessory()
     }
-    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) =
+    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
         session.updateSurface(holder.surface)
+        netSession.updateSurface(holder.surface)
+    }
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         session.updateSurface(null)
+        netSession.updateSurface(null)
         session.close()
+        netSession.disconnect()
         showStatus("Waiting for display surface", false)
     }
 
     override fun onDestroy() {
         unregisterReceiver(receiver)
         session.close()
+        netSession.shutdown()
         super.onDestroy()
     }
 
     @Suppress("DEPRECATION")
     private fun Intent.accessory(): UsbAccessory? =
         getParcelableExtra(UsbManager.EXTRA_ACCESSORY) as? UsbAccessory
+
+    private fun getLocalIpAddresses(): List<String> {
+        val ips = mutableListOf<String>()
+        try {
+            val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
+            for (iface in interfaces) {
+                if (iface.isLoopback || !iface.isUp) continue
+                val addresses = Collections.list(iface.inetAddresses)
+                for (addr in addresses) {
+                    if (addr.isLoopbackAddress) continue
+                    val ip = addr.hostAddress ?: continue
+                    if (ip.contains(":")) continue // Skip IPv6
+                    
+                    val name = iface.name.lowercase()
+                    if (name.contains("wlan") || name.contains("eth") || name.contains("ap")) {
+                        ips.add("Wi-Fi IP: $ip")
+                    } else if (name.contains("tun") || name.contains("tailscale") || ip.startsWith("100.")) {
+                        ips.add("Tailscale IP: $ip")
+                    } else {
+                        ips.add("${iface.displayName}: $ip")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Failed to get network interfaces", e)
+        }
+        return ips
+    }
+
+    private fun getActiveConfig(): StreamConfig? {
+        return if (netSession.isOpen) netSession.activeConfig else session.activeConfig
+    }
+
+    private fun sendTouchEvent(action: Int, x: Float, y: Float) {
+        if (netSession.isOpen) {
+            netSession.sendTouchEvent(action, x, y)
+        } else {
+            session.sendTouchEvent(action, x, y)
+        }
+    }
+
+    private fun sendScrollEvent(dx: Float, dy: Float) {
+        if (netSession.isOpen) {
+            netSession.sendScrollEvent(dx, dy)
+        } else {
+            session.sendScrollEvent(dx, dy)
+        }
+    }
 
     companion object {
         private const val ACTION_USB_PERMISSION = "dev.andmon.receiver.USB_PERMISSION"
