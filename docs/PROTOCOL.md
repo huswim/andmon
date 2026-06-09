@@ -56,6 +56,7 @@ sends:
 {"width":2960,"height":1848,"fps":60,"bitrate":12000000,"dataRateLimit":12000000,"codec":"video/hevc","audioEnabled":true,"touchEnabled":false}
 ```
 
+`fps` is the selected max framerate and must be one of `60`, `90`, or `120`.
 The host sends an initial `PING` and waits for the matching `PONG` before
 starting capture. Codec parameter sets are sent as `CODEC_CONFIG` before the first
 `VIDEO`, after reconnect, and whenever VideoToolbox produces new values.
@@ -144,4 +145,3 @@ The host sends the following identification strings to identify itself to the An
 | 3 | Version | `1.0` |
 | 4 | URI | `https://localhost/andmon` |
 | 5 | Serial Number | `andmon-mvp` |
-

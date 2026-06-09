@@ -14,7 +14,7 @@ for an Apple-silicon Mac. The runtime path is:
 This is a direct-run prototype. It uses undocumented macOS APIs and is not
 appropriate for App Store distribution. It intentionally targets one fixed
 Galaxy Tab S8 Ultra profile: a `1480 x 924` HiDPI desktop backed by the tablet's
-native `2960 x 1848` landscape panel pixels at `60 FPS`.
+native `2960 x 1848` landscape panel pixels at `60`, `90`, or `120 FPS`.
 Set the tablet's screen mode to `Natural`; the virtual display and full-range
 HEVC stream use the matching sRGB / BT.709 SDR color profile.
 

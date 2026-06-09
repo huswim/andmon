@@ -6,9 +6,9 @@ final class VirtualDisplay: @unchecked Sendable {
     private var raw: OpaquePointer?
     let displayID: CGDirectDisplayID
 
-    init() throws {
+    init(refreshRate: Int) throws {
         var error: UnsafeMutableRawPointer?
-        guard let raw = AndmonVirtualDisplayCreate(&error) else {
+        guard let raw = AndmonVirtualDisplayCreate(Int32(refreshRate), &error) else {
             throw BridgeError.take(error, fallback: "Unable to create virtual display")
         }
         self.raw = raw

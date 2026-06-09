@@ -259,7 +259,7 @@ class AccessorySession(
                 if (surface != target || streamConfig != config) return
             }
             try {
-                decoder.configure(target, config.width, config.height)
+                decoder.configure(target, config.width, config.height, config.fps)
             } catch (error: Exception) {
                 reject("Unable to configure HEVC decoder: ${error.message}")
                 return
@@ -268,7 +268,7 @@ class AccessorySession(
                 configured = true
             }
         }
-        onStatus("Streaming ${config.width} x ${config.height}", true)
+        onStatus("Streaming ${config.width} x ${config.height} @ ${config.fps} FPS", true)
         if (config.audioEnabled) {
             audioPlayer.start()
         } else {

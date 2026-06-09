@@ -9,11 +9,14 @@ import AVFoundation
 
 final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     static let defaultBitrate = 12_000_000
+    static let defaultMaxFrameRate = 60
+    static let allowedMaxFrameRates = [60, 90, 120]
     private static let maxInFlightFrames = 2
 
     private let displayID: CGDirectDisplayID
     private let transport: AndmonTransport
     private let bitrate: Int
+    private let maxFrameRate: Int
     private let audioEnabled: Bool
     private let captureQueue = DispatchQueue(label: "dev.andmon.capture")
     private var stream: SCStream?
@@ -42,10 +45,17 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
     private var totalAudioFramesEncoded: Int64 = 0
     private var debugAudioCount = 0
 
-    init(displayID: CGDirectDisplayID, transport: AndmonTransport, bitrate: Int, audioEnabled: Bool) {
+    init(
+        displayID: CGDirectDisplayID,
+        transport: AndmonTransport,
+        bitrate: Int,
+        maxFrameRate: Int,
+        audioEnabled: Bool
+    ) {
         self.displayID = displayID
         self.transport = transport
         self.bitrate = bitrate
+        self.maxFrameRate = maxFrameRate
         self.audioEnabled = audioEnabled
     }
 
@@ -61,7 +71,7 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
         let configuration = SCStreamConfiguration()
         configuration.width = 2960
         configuration.height = 1848
-        configuration.minimumFrameInterval = CMTime(value: 1, timescale: 60)
+        configuration.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(maxFrameRate))
         // VideoToolbox retains capture surfaces asynchronously while encoding.
         // Keep one additional surface available so ScreenCaptureKit can continue
         // producing frames while the current frame is in flight.
@@ -400,9 +410,9 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
             value: [bitrate / 8, 1] as CFArray
         )
         VTSessionSetProperty(created, key: kVTCompressionPropertyKey_MaxFrameDelayCount, value: 0 as CFNumber)
-        VTSessionSetProperty(created, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 60 as CFNumber)
-        VTSessionSetProperty(created, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 60 as CFNumber)
-        VTSessionSetProperty(created, key: kVTCompressionPropertyKey_MaximumRealTimeFrameRate, value: 60 as CFNumber)
+        VTSessionSetProperty(created, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: maxFrameRate as CFNumber)
+        VTSessionSetProperty(created, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: maxFrameRate as CFNumber)
+        VTSessionSetProperty(created, key: kVTCompressionPropertyKey_MaximumRealTimeFrameRate, value: maxFrameRate as CFNumber)
         VTSessionSetProperty(
             created, key: kVTCompressionPropertyKey_ColorPrimaries,
             value: kCVImageBufferColorPrimaries_ITU_R_709_2

@@ -12,7 +12,7 @@ Andmon follows a classic Host-Receiver model, utilizing the Android Open Accesso
 1.  **USB Discovery**: Monitors for Android devices.
 2.  **AOA Handshake**: Performs the AOA mode switch (Requests 51, 52, 53) to turn the tablet into a USB Accessory.
 3.  **Virtual Display & UI**: Creates a virtual monitor in macOS using `VirtualDisplayBridge` and provides a dynamic **SwiftUI Popover** in the menu bar with real-time encoding and transport metrics.
-4.  **Capture**: Uses **ScreenCaptureKit** (`SCStream`) to capture video frames from the virtual display at 60 FPS, alongside system audio.
+4.  **Capture**: Uses **ScreenCaptureKit** (`SCStream`) to capture video frames from the virtual display at the selected max framerate (`60`, `90`, or `120 FPS`), alongside system audio.
 5.  **Encode**: Feeds captured video frames into **VideoToolbox** (`VTCompressionSession`) for hardware-accelerated **HEVC (H.265)** encoding. Feeds captured audio into **AudioToolbox** (`AudioConverter`) for **Opus** encoding.
 6.  **Transport**: Wraps encoded Annex B access units and Opus packets in the **Andmon Wire Protocol** and sends them via USB bulk OUT.
 

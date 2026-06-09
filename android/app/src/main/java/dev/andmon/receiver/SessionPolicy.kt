@@ -3,7 +3,7 @@ package dev.andmon.receiver
 object TabletProfile {
     const val PANEL_WIDTH = 2960
     const val PANEL_HEIGHT = 1848
-    const val FPS = 60
+    val SUPPORTED_FPS = setOf(60, 90, 120)
     const val MIME_TYPE = "video/hevc"
 }
 
@@ -29,7 +29,7 @@ data class StreamConfig(
             require(width == TabletProfile.PANEL_WIDTH && height == TabletProfile.PANEL_HEIGHT) {
                 "Unsupported stream size: $width x $height"
             }
-            require(fps == TabletProfile.FPS) { "Unsupported frame rate: $fps" }
+            require(fps in TabletProfile.SUPPORTED_FPS) { "Unsupported frame rate: $fps" }
             require(bitrate > 0) { "Invalid bitrate: $bitrate" }
             require(codec == TabletProfile.MIME_TYPE) { "Unsupported codec: $codec" }
             return StreamConfig(width, height, fps, bitrate, codec, audioEnabled, touchEnabled)

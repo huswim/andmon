@@ -17,12 +17,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     override init() {
         let bitrate = Self.migrateBitrate(in: .standard)
+        let maxFrameRate = Self.migrateMaxFrameRate(in: .standard)
         let audioEnabled = UserDefaults.standard.object(forKey: "audioEnabled") as? Bool ?? true
         let touchEnabled = UserDefaults.standard.object(forKey: "touchEnabled") as? Bool ?? false
         let modeRaw = UserDefaults.standard.string(forKey: "connectionMode") ?? ""
         let mode = ConnectionMode(rawValue: modeRaw) ?? .wired
         let tabletIP = UserDefaults.standard.string(forKey: "tabletIP") ?? "192.168.35.2"
-        session = HostSession(bitrate: bitrate, audioEnabled: audioEnabled, touchEnabled: touchEnabled)
+        session = HostSession(
+            bitrate: bitrate,
+            maxFrameRate: maxFrameRate,
+            audioEnabled: audioEnabled,
+            touchEnabled: touchEnabled
+        )
         session.configure(mode: mode, tabletIP: tabletIP)
         super.init()
     }
@@ -39,6 +45,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         vm.onBitrateChange = { [weak self] bitrate in
             UserDefaults.standard.set(bitrate, forKey: "bitrate")
             self?.session.setBitrate(bitrate)
+        }
+        vm.onMaxFrameRateChange = { [weak self] maxFrameRate in
+            UserDefaults.standard.set(maxFrameRate, forKey: "maxFrameRate")
+            self?.session.setMaxFrameRate(maxFrameRate)
         }
         vm.onAudioToggle = { [weak self] enabled in
             UserDefaults.standard.set(enabled, forKey: "audioEnabled")
@@ -68,6 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         vm.bitrateMbps = Double(Self.migrateBitrate(in: .standard)) / 1_000_000.0
+        vm.maxFrameRate = Self.migrateMaxFrameRate(in: .standard)
         vm.audioEnabled = UserDefaults.standard.object(forKey: "audioEnabled") as? Bool ?? true
         vm.touchEnabled = UserDefaults.standard.object(forKey: "touchEnabled") as? Bool ?? false
         let modeRaw = UserDefaults.standard.string(forKey: "connectionMode") ?? ""
@@ -278,11 +289,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let maxBitrate = 100 * 1_000_000
         return (minBitrate...maxBitrate).contains(bitrate) ? bitrate : nil
     }
+
+    private static func migrateMaxFrameRate(in defaults: UserDefaults) -> Int {
+        let maxFrameRate = validMaxFrameRate(defaults.integer(forKey: "maxFrameRate"))
+            ?? CaptureEncoder.defaultMaxFrameRate
+        defaults.set(maxFrameRate, forKey: "maxFrameRate")
+        return maxFrameRate
+    }
+
+    private static func validMaxFrameRate(_ maxFrameRate: Int) -> Int? {
+        CaptureEncoder.allowedMaxFrameRates.contains(maxFrameRate) ? maxFrameRate : nil
+    }
 }
 
 private func runVirtualDisplayGate() -> Never {
     do {
-        let display = try VirtualDisplay()
+        let display = try VirtualDisplay(refreshRate: CaptureEncoder.defaultMaxFrameRate)
         print("PASS virtual display gate: displayID=\(display.displayID), logical=1480x924, backing=2960x1848")
         display.close()
         exit(EXIT_SUCCESS)

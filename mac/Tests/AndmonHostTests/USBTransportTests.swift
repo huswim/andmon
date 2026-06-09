@@ -3,7 +3,7 @@ import Testing
 
 struct USBTransportTests {
     @Test func replacedVideoFrameOnlyNeedsRecoveryWhenNewFrameIsNotKeyframe() {
-        let result = USBTransportSendResult(replacedVideo: true)
+        let result = TransportSendResult(replacedVideo: true)
         #expect(!result.acceptedForDecoder(isKeyframe: false))
         #expect(result.acceptedForDecoder(isKeyframe: true))
     }

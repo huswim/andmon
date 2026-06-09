@@ -7,6 +7,7 @@ final class SessionViewModel {
     var status: HostStatus = .disconnected
     var metrics = SessionMetrics()
     var bitrateMbps: Double = 12.0
+    var maxFrameRate: Int = CaptureEncoder.defaultMaxFrameRate
     var audioEnabled = true
     var touchEnabled = false
     var connectionMode: ConnectionMode = .wired
@@ -16,6 +17,7 @@ final class SessionViewModel {
     var onStop: (() -> Void)?
     var onQuit: (() -> Void)?
     var onBitrateChange: ((Int) -> Void)?
+    var onMaxFrameRateChange: ((Int) -> Void)?
     var onAudioToggle: ((Bool) -> Void)?
     var onTouchToggle: ((Bool) -> Void)?
     var onModeChange: ((ConnectionMode) -> Void)?
@@ -43,6 +45,8 @@ struct PopoverView: View {
 
             // Bitrate Slider Section
             bitrateSection
+
+            maxFrameRateSection
 
             // Audio Section
             audioSection
@@ -281,6 +285,29 @@ struct PopoverView: View {
                     .foregroundStyle(.secondary)
             }
             .padding(.top, -4)
+        }
+        .padding(.horizontal, 4)
+    }
+
+    // MARK: - Max Framerate Section
+    private var maxFrameRateSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Max Framerate")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.primary)
+
+            Picker("Max Framerate", selection: Binding(
+                get: { viewModel.maxFrameRate },
+                set: { newValue in
+                    viewModel.maxFrameRate = newValue
+                    viewModel.onMaxFrameRateChange?(newValue)
+                }
+            )) {
+                ForEach(CaptureEncoder.allowedMaxFrameRates, id: \.self) { fps in
+                    Text("\(fps)").tag(fps)
+                }
+            }
+            .pickerStyle(.segmented)
         }
         .padding(.horizontal, 4)
     }

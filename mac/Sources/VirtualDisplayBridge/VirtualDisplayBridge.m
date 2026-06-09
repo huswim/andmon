@@ -28,7 +28,7 @@ static NSError *AndmonError(NSString *message) {
                            userInfo:@{NSLocalizedDescriptionKey: message}];
 }
 
-AndmonVirtualDisplay *AndmonVirtualDisplayCreate(void **errorOut) {
+AndmonVirtualDisplay *AndmonVirtualDisplayCreate(int32_t refreshRate, void **errorOut) {
     NSError *error = nil;
     id descriptor = nil;
     CGVirtualDisplayMode *mode = nil;
@@ -65,7 +65,7 @@ AndmonVirtualDisplay *AndmonVirtualDisplayCreate(void **errorOut) {
     [descriptor setValue:[NSValue valueWithPoint:NSMakePoint(0.3000, 0.6000)] forKey:@"greenPrimary"];
     [descriptor setValue:[NSValue valueWithPoint:NSMakePoint(0.6400, 0.3300)] forKey:@"redPrimary"];
 
-    mode = [[modeClass alloc] initWithWidth:1480 height:924 refreshRate:60.0];
+    mode = [[modeClass alloc] initWithWidth:1480 height:924 refreshRate:(double)refreshRate];
     settings = [settingsClass new];
     [settings setValue:@[mode] forKey:@"modes"];
     [settings setValue:@1 forKey:@"hiDPI"];

@@ -13,6 +13,8 @@ class SessionPolicyTest {
             StreamConfig(2960, 1848, 60, 80_000_000, "video/hevc", audioEnabled = false, touchEnabled = true),
             StreamConfig.validated(2960, 1848, 60, 80_000_000, "video/hevc", touchEnabled = true),
         )
+        assertEquals(90, StreamConfig.validated(2960, 1848, 90, 80_000_000, "video/hevc").fps)
+        assertEquals(120, StreamConfig.validated(2960, 1848, 120, 80_000_000, "video/hevc").fps)
     }
 
     @Test
@@ -25,6 +27,9 @@ class SessionPolicyTest {
         }
         assertThrows(IllegalArgumentException::class.java) {
             StreamConfig.validated(2960, 1848, 60, 0, "video/hevc")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            StreamConfig.validated(2960, 1848, 75, 80_000_000, "video/hevc")
         }
     }
 

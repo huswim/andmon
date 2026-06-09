@@ -103,6 +103,7 @@ final class HostSession: @unchecked Sendable {
     private var manuallyStopped = true
     private var currentStatus: HostStatus?
     private var bitrate: Int
+    private var maxFrameRate: Int
     private var audioEnabled = true
     private var touchEnabled = false
     private var isCursorHidden = false
@@ -123,10 +124,12 @@ final class HostSession: @unchecked Sendable {
 
     init(
         bitrate: Int = CaptureEncoder.defaultBitrate,
+        maxFrameRate: Int = CaptureEncoder.defaultMaxFrameRate,
         audioEnabled: Bool = true,
         touchEnabled: Bool = false
     ) {
         self.bitrate = bitrate
+        self.maxFrameRate = maxFrameRate
         self.audioEnabled = audioEnabled
         self.touchEnabled = touchEnabled
 
@@ -141,6 +144,16 @@ final class HostSession: @unchecked Sendable {
             fputs("Selected bitrate=\(bitrate); applying on next encoder start\n", stderr)
             guard !manuallyStopped, let transport, display != nil else { return }
             restartEncoder(using: transport)
+        }
+    }
+
+    func setMaxFrameRate(_ maxFrameRate: Int) {
+        stateQueue.async { [weak self] in
+            guard let self, self.maxFrameRate != maxFrameRate else { return }
+            self.maxFrameRate = maxFrameRate
+            fputs("Selected maxFrameRate=\(maxFrameRate); applying on next display and encoder start\n", stderr)
+            guard !manuallyStopped, let transport, (display != nil || streamer != nil) else { return }
+            restartDisplayAndEncoder(using: transport)
         }
     }
 
@@ -437,7 +450,7 @@ final class HostSession: @unchecked Sendable {
             cancelPendingPing()
         }
         if display == nil {
-            display = try VirtualDisplay()
+            display = try VirtualDisplay(refreshRate: maxFrameRate)
         }
         if let transport, streamer != nil {
             restartEncoder(using: transport)
@@ -464,10 +477,27 @@ final class HostSession: @unchecked Sendable {
         }
     }
 
+    private func restartDisplayAndEncoder(using transport: AndmonTransport) {
+        guard !restartingEncoder else { return }
+        cancelHeartbeat()
+        cancelPendingPing()
+        publish(.negotiating)
+        restartingEncoder = true
+        deactivateDisplayAndStopEncoder { [weak self, weak transport] in
+            guard let self, let transport else { return }
+            self.stateQueue.async {
+                guard self.transport === transport else { return }
+                self.restartingEncoder = false
+                guard !self.manuallyStopped else { return }
+                self.renegotiateStreaming(using: transport)
+            }
+        }
+    }
+
     private func renegotiateStreaming(using transport: AndmonTransport) {
         do {
             if display == nil {
-                display = try VirtualDisplay()
+                display = try VirtualDisplay(refreshRate: maxFrameRate)
             }
             try sendConfigurationAndPing(using: transport)
         } catch {
@@ -478,7 +508,7 @@ final class HostSession: @unchecked Sendable {
     private func sendConfigurationAndPing(using transport: AndmonTransport?) throws {
         guard let transport else { throw SessionError.incompleteGate }
         let config: [String: Any] = [
-            "width": 2960, "height": 1848, "fps": 60,
+            "width": 2960, "height": 1848, "fps": maxFrameRate,
             "bitrate": bitrate, "dataRateLimit": bitrate, "codec": "video/hevc",
             "audioEnabled": audioEnabled,
             "touchEnabled": touchEnabled,
@@ -633,7 +663,11 @@ final class HostSession: @unchecked Sendable {
         self.lastThroughputMbps = 0.0
         
         let streamer = CaptureEncoder(
-            displayID: display.displayID, transport: transport, bitrate: bitrate, audioEnabled: audioEnabled
+            displayID: display.displayID,
+            transport: transport,
+            bitrate: bitrate,
+            maxFrameRate: maxFrameRate,
+            audioEnabled: audioEnabled
         )
         streamer.onMetrics = { [weak self, weak streamerRef = streamer] metrics in
             guard let self, let streamerRef else { return }
