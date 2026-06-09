@@ -31,6 +31,7 @@ protocol errors. All JSON payloads are UTF-8.
 | `ERROR` | 8 | Either | JSON diagnostic |
 | `KEYFRAME_REQUEST` | 9 | Android -> Mac | Empty payload requesting an IDR access unit |
 | `AUDIO` | 10 | Mac -> Android | One raw Opus audio packet |
+| `TOUCH` | 11 | Android -> Mac | JSON touch event parameters |
 
 `VIDEO` flag bit `0` marks an IDR access unit. `ptsMicros` is the presentation
 timestamp in microseconds and is meaningful for `VIDEO`.
@@ -52,13 +53,14 @@ The host rejects mismatched panel dimensions, creates the virtual monitor, and
 sends:
 
 ```json
-{"width":2960,"height":1848,"fps":60,"bitrate":12000000,"dataRateLimit":12000000,"codec":"video/hevc","audioEnabled":true}
+{"width":2960,"height":1848,"fps":60,"bitrate":12000000,"dataRateLimit":12000000,"codec":"video/hevc","audioEnabled":true,"touchEnabled":false}
 ```
 
 The host sends an initial `PING` and waits for the matching `PONG` before
 starting capture. Codec parameter sets are sent as `CODEC_CONFIG` before the first
 `VIDEO`, after reconnect, and whenever VideoToolbox produces new values.
 `audioEnabled` is an optional boolean indicating if system audio streaming is enabled.
+`touchEnabled` is an optional boolean indicating if mouse input simulation from the tablet is enabled (default to false).
 While streaming, the host sends a heartbeat `PING` every two seconds. If Android
 does not return the matching `PONG` within three seconds, the host stops capture,
 deactivates the virtual display, and publishes `Negotiating`. The host creates a
@@ -71,6 +73,17 @@ open, re-sends `CONFIG` and `PING`, and starts a new encoder after the matching
 If Android drops a video access unit because its decoder has no immediately
 available input buffer, it sends `KEYFRAME_REQUEST`. The host forces a new IDR
 access unit so the low-latency receiver can resume from a valid reference frame.
+
+If `touchEnabled` is configured true, Android captures touch events on the display surface and sends them to the Mac as `TOUCH` messages:
+
+```json
+{"action":0,"x":0.5,"y":0.5}
+```
+
+Where:
+* `action` is `0` (touch down), `1` (touch move/drag), or `2` (touch up).
+* `x` and `y` are normalized floats from `0.0` to `1.0`.
+
 
 ## AOA Connection Handshake & Identification
 

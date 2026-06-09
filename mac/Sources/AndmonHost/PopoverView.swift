@@ -8,12 +8,14 @@ final class SessionViewModel {
     var metrics = SessionMetrics()
     var bitrateMbps: Double = 12.0
     var audioEnabled = true
+    var touchEnabled = false
 
     var onResume: (() -> Void)?
     var onStop: (() -> Void)?
     var onQuit: (() -> Void)?
     var onBitrateChange: ((Int) -> Void)?
     var onAudioToggle: ((Bool) -> Void)?
+    var onTouchToggle: ((Bool) -> Void)?
 }
 
 struct PopoverView: View {
@@ -33,6 +35,9 @@ struct PopoverView: View {
 
             // Audio Section
             audioSection
+
+            // Touch Section
+            touchSection
 
             Divider()
                 .opacity(0.3)
@@ -211,6 +216,28 @@ struct PopoverView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.blue)
                 Text("Stream Audio")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.primary)
+            }
+        }
+        .toggleStyle(.switch)
+        .padding(.horizontal, 4)
+    }
+
+    // MARK: - Touch Section
+    private var touchSection: some View {
+        Toggle(isOn: Binding(
+            get: { viewModel.touchEnabled },
+            set: { newValue in
+                viewModel.touchEnabled = newValue
+                viewModel.onTouchToggle?(newValue)
+            }
+        )) {
+            HStack(spacing: 8) {
+                Image(systemName: "hand.tap.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.blue)
+                Text("Enable Touch Input")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.primary)
             }

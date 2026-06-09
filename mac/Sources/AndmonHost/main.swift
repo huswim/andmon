@@ -18,7 +18,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     override init() {
         let bitrate = Self.migrateBitrate(in: .standard)
         let audioEnabled = UserDefaults.standard.object(forKey: "audioEnabled") as? Bool ?? true
-        session = HostSession(bitrate: bitrate, audioEnabled: audioEnabled)
+        let touchEnabled = UserDefaults.standard.object(forKey: "touchEnabled") as? Bool ?? false
+        session = HostSession(bitrate: bitrate, audioEnabled: audioEnabled, touchEnabled: touchEnabled)
         super.init()
     }
 
@@ -39,8 +40,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             UserDefaults.standard.set(enabled, forKey: "audioEnabled")
             self?.session.setAudioEnabled(enabled)
         }
+        vm.onTouchToggle = { [weak self] enabled in
+            if enabled {
+                let options = ["AXTrustedCheckOptionPrompt" as String: true] as CFDictionary
+                let isTrusted = AXIsProcessTrustedWithOptions(options)
+                if !isTrusted {
+                    self?.viewModel?.touchEnabled = false
+                    UserDefaults.standard.set(false, forKey: "touchEnabled")
+                    self?.session.setTouchEnabled(false)
+                    return
+                }
+            }
+            UserDefaults.standard.set(enabled, forKey: "touchEnabled")
+            self?.session.setTouchEnabled(enabled)
+        }
         vm.bitrateMbps = Double(Self.migrateBitrate(in: .standard)) / 1_000_000.0
         vm.audioEnabled = UserDefaults.standard.object(forKey: "audioEnabled") as? Bool ?? true
+        vm.touchEnabled = UserDefaults.standard.object(forKey: "touchEnabled") as? Bool ?? false
 
         session.onStatus = { [weak self] status in
             self?.viewModel?.status = status

@@ -62,4 +62,14 @@ struct WireProtocolTests {
         invalid[4] = 2
         #expect(throws: ProtocolError.unsupportedVersion(2)) { try parser.append(invalid) }
     }
+
+    @Test func touchFrame() throws {
+        var parser = FrameParser()
+        let payload = Data("{\"action\":0,\"x\":0.5,\"y\":0.75}".utf8)
+        let touch = try WireFrame(type: .touch, payload: payload).encoded()
+        let frames = try parser.append(touch)
+        #expect(frames.count == 1)
+        #expect(frames[0].type == .touch)
+        #expect(frames[0].payload == payload)
+    }
 }

@@ -40,6 +40,9 @@ class AccessorySession(
     val isOpen: Boolean
         get() = running.get()
 
+    val activeConfig: StreamConfig?
+        get() = streamConfig
+
     val videoResolution: String
         get() = streamConfig?.let { "${it.width} x ${it.height}" } ?: "-"
 
@@ -184,7 +187,8 @@ class AccessorySession(
                             config.getInt("fps"),
                             config.getInt("bitrate"),
                             config.getString("codec"),
-                            config.optBoolean("audioEnabled", false)
+                            config.optBoolean("audioEnabled", false),
+                            config.optBoolean("touchEnabled", false)
                         ),
                     )
                 } catch (error: Exception) {
@@ -284,6 +288,16 @@ class AccessorySession(
         if (shouldSend) {
             send(MessageType.PONG, payload)
         }
+    }
+
+    fun sendTouchEvent(action: Int, x: Float, y: Float) {
+        val payload = JSONObject()
+            .put("action", action)
+            .put("x", x.toDouble())
+            .put("y", y.toDouble())
+            .toString()
+            .toByteArray(Charsets.UTF_8)
+        send(MessageType.TOUCH, payload)
     }
 
     private fun send(type: MessageType, payload: ByteArray = byteArrayOf()) {

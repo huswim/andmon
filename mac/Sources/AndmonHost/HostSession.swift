@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 struct SessionMetrics: Sendable, Equatable {
     var capturedFPS: Int = 0
@@ -48,6 +49,7 @@ final class HostSession: @unchecked Sendable {
     private var currentStatus: HostStatus?
     private var bitrate: Int
     private var audioEnabled = true
+    private var touchEnabled = false
     private var isRuntimeStopping = false
     private var stopCompletions: [@Sendable () -> Void] = []
     var onStatus: (@MainActor (HostStatus) -> Void)?
@@ -55,10 +57,12 @@ final class HostSession: @unchecked Sendable {
 
     init(
         bitrate: Int = CaptureEncoder.defaultBitrate,
-        audioEnabled: Bool = true
+        audioEnabled: Bool = true,
+        touchEnabled: Bool = false
     ) {
         self.bitrate = bitrate
         self.audioEnabled = audioEnabled
+        self.touchEnabled = touchEnabled
     }
 
     func setBitrate(_ bitrate: Int) {
@@ -76,6 +80,16 @@ final class HostSession: @unchecked Sendable {
             guard let self, self.audioEnabled != enabled else { return }
             self.audioEnabled = enabled
             fputs("Selected audioEnabled=\(enabled); applying on next encoder start\n", stderr)
+            guard !manuallyStopped, let transport, display != nil else { return }
+            restartEncoder(using: transport)
+        }
+    }
+
+    func setTouchEnabled(_ enabled: Bool) {
+        stateQueue.async { [weak self] in
+            guard let self, self.touchEnabled != enabled else { return }
+            self.touchEnabled = enabled
+            fputs("Selected touchEnabled=\(enabled); applying on next encoder start\n", stderr)
             guard !manuallyStopped, let transport, display != nil else { return }
             restartEncoder(using: transport)
         }
@@ -159,6 +173,9 @@ final class HostSession: @unchecked Sendable {
                 streamer?.requestKeyframe()
             case .error:
                 throw SessionError.peer(String(decoding: frame.payload, as: UTF8.self))
+            case .touch:
+                guard touchEnabled else { return }
+                try handleTouch(frame.payload)
             default:
                 break
             }
@@ -166,6 +183,41 @@ final class HostSession: @unchecked Sendable {
             _ = try? transport?.send(type: .error, payload: diagnostic(error))
             failed(error)
         }
+    }
+
+    private func handleTouch(_ payload: Data) throws {
+        guard let json = try JSONSerialization.jsonObject(with: payload) as? [String: Any],
+              let action = json["action"] as? Int,
+              let x = json["x"] as? Double,
+              let y = json["y"] as? Double else {
+            return
+        }
+
+        guard let display else { return }
+        let displayID = display.displayID
+        let bounds = CGDisplayBounds(displayID)
+        guard bounds.width > 0 && bounds.height > 0 else { return }
+
+        let globalX = bounds.origin.x + CGFloat(x) * bounds.size.width
+        let globalY = bounds.origin.y + CGFloat(y) * bounds.size.height
+        let point = CGPoint(x: globalX, y: globalY)
+
+        let mouseType: CGEventType
+        switch action {
+        case 0:
+            mouseType = .leftMouseDown
+        case 1:
+            mouseType = .leftMouseDragged
+        case 2:
+            mouseType = .leftMouseUp
+        default:
+            return
+        }
+
+        guard let event = CGEvent(mouseEventSource: nil, mouseType: mouseType, mouseCursorPosition: point, mouseButton: .left) else {
+            return
+        }
+        event.post(tap: .cghidEventTap)
     }
 
     private func handleHello(_ payload: Data) throws {
@@ -225,6 +277,7 @@ final class HostSession: @unchecked Sendable {
             "width": 2960, "height": 1848, "fps": 60,
             "bitrate": bitrate, "dataRateLimit": bitrate, "codec": "video/hevc",
             "audioEnabled": audioEnabled,
+            "touchEnabled": touchEnabled,
         ]
         try transport.send(type: .config, payload: try JSONSerialization.data(withJSONObject: config))
         try sendPing(using: transport, purpose: .negotiation)

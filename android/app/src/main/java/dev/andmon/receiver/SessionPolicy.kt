@@ -14,16 +14,25 @@ data class StreamConfig(
     val bitrate: Int,
     val codec: String,
     val audioEnabled: Boolean = false,
+    val touchEnabled: Boolean = false,
 ) {
     companion object {
-        fun validated(width: Int, height: Int, fps: Int, bitrate: Int, codec: String, audioEnabled: Boolean = false): StreamConfig {
+        fun validated(
+            width: Int,
+            height: Int,
+            fps: Int,
+            bitrate: Int,
+            codec: String,
+            audioEnabled: Boolean = false,
+            touchEnabled: Boolean = false,
+        ): StreamConfig {
             require(width == TabletProfile.PANEL_WIDTH && height == TabletProfile.PANEL_HEIGHT) {
                 "Unsupported stream size: $width x $height"
             }
             require(fps == TabletProfile.FPS) { "Unsupported frame rate: $fps" }
             require(bitrate > 0) { "Invalid bitrate: $bitrate" }
             require(codec == TabletProfile.MIME_TYPE) { "Unsupported codec: $codec" }
-            return StreamConfig(width, height, fps, bitrate, codec, audioEnabled)
+            return StreamConfig(width, height, fps, bitrate, codec, audioEnabled, touchEnabled)
         }
     }
 }

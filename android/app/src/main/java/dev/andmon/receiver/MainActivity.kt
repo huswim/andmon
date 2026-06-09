@@ -16,6 +16,7 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
+import android.view.MotionEvent
 import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -146,16 +147,62 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
             leftMargin = 40
         }
 
+        surfaceView.setOnTouchListener { v, event ->
+            val config = session.activeConfig
+            val action = event.actionMasked
+
+            if (config == null || !config.touchEnabled) {
+                // When touch is disabled, tap to toggle overlay visibility
+                if (action == MotionEvent.ACTION_UP) {
+                    overlaysVisible = !overlaysVisible
+                    updateOverlayVisibility()
+                }
+                return@setOnTouchListener true
+            }
+
+            // Toggle overlay if two fingers touch the screen
+            if (event.pointerCount >= 2 && action == MotionEvent.ACTION_POINTER_DOWN) {
+                overlaysVisible = !overlaysVisible
+                updateOverlayVisibility()
+                return@setOnTouchListener true
+            }
+
+            // Only track primary pointer (pointer ID 0)
+            val pointerId = event.getPointerId(event.actionIndex)
+            if (pointerId != 0) {
+                return@setOnTouchListener true
+            }
+
+            val x = event.x
+            val y = event.y
+            val width = v.width.toFloat()
+            val height = v.height.toFloat()
+
+            if (width > 0 && height > 0) {
+                val normalizedX = (x / width).coerceIn(0f, 1f)
+                val normalizedY = (y / height).coerceIn(0f, 1f)
+
+                val protoAction = when (action) {
+                    MotionEvent.ACTION_DOWN -> 0
+                    MotionEvent.ACTION_MOVE -> 1
+                    MotionEvent.ACTION_UP -> 2
+                    MotionEvent.ACTION_CANCEL -> 2
+                    else -> -1
+                }
+
+                if (protoAction >= 0) {
+                    session.sendTouchEvent(protoAction, normalizedX, normalizedY)
+                }
+            }
+            true
+        }
+
         setContentView(FrameLayout(this).apply {
             setBackgroundColor(0xff000000.toInt())
             addView(surfaceView, FrameLayout.LayoutParams(-1, -1))
             addView(status, FrameLayout.LayoutParams(-1, -1))
             addView(toggleCard, toggleParams)
             addView(telemetryCard, telemetryParams)
-            setOnClickListener {
-                overlaysVisible = !overlaysVisible
-                updateOverlayVisibility()
-            }
         })
 
         surfaceView.holder.addCallback(this)

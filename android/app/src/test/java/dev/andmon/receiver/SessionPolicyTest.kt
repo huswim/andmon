@@ -10,8 +10,8 @@ class SessionPolicyTest {
     @Test
     fun acceptsGalaxyTabHevcProfile() {
         assertEquals(
-            StreamConfig(2960, 1848, 60, 80_000_000, "video/hevc"),
-            StreamConfig.validated(2960, 1848, 60, 80_000_000, "video/hevc"),
+            StreamConfig(2960, 1848, 60, 80_000_000, "video/hevc", audioEnabled = false, touchEnabled = true),
+            StreamConfig.validated(2960, 1848, 60, 80_000_000, "video/hevc", touchEnabled = true),
         )
     }
 
