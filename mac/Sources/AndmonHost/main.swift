@@ -49,9 +49,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let popover = NSPopover()
-        popover.contentSize = NSSize(width: 320, height: 320)
         popover.behavior = .transient
-        popover.contentViewController = NSHostingController(rootView: PopoverView(viewModel: vm))
+        let hostingController = NSHostingController(rootView: PopoverView(viewModel: vm))
+        popover.contentViewController = hostingController
+        popover.contentSize = hostingController.view.fittingSize
         self.popover = popover
 
         if let button = item.button {
@@ -68,7 +69,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(sender)
         } else {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            if let vc = popover.contentViewController {
+                popover.contentSize = vc.view.fittingSize
+            }
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .maxY)
             NSApp.activate(ignoringOtherApps: true)
         }
     }
