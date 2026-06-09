@@ -7,11 +7,13 @@ final class SessionViewModel {
     var status: HostStatus = .disconnected
     var metrics = SessionMetrics()
     var bitrateMbps: Double = 12.0
+    var audioEnabled = true
 
     var onResume: (() -> Void)?
     var onStop: (() -> Void)?
     var onQuit: (() -> Void)?
     var onBitrateChange: ((Int) -> Void)?
+    var onAudioToggle: ((Bool) -> Void)?
 }
 
 struct PopoverView: View {
@@ -28,6 +30,9 @@ struct PopoverView: View {
 
             // Bitrate Slider Section
             bitrateSection
+
+            // Audio Section
+            audioSection
 
             Divider()
                 .opacity(0.3)
@@ -189,6 +194,28 @@ struct PopoverView: View {
             }
             .padding(.top, -4)
         }
+        .padding(.horizontal, 4)
+    }
+
+    // MARK: - Audio Section
+    private var audioSection: some View {
+        Toggle(isOn: Binding(
+            get: { viewModel.audioEnabled },
+            set: { newValue in
+                viewModel.audioEnabled = newValue
+                viewModel.onAudioToggle?(newValue)
+            }
+        )) {
+            HStack(spacing: 8) {
+                Image(systemName: "speaker.wave.2.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.blue)
+                Text("Stream Audio")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.primary)
+            }
+        }
+        .toggleStyle(.switch)
         .padding(.horizontal, 4)
     }
 

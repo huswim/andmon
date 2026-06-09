@@ -7,6 +7,16 @@
 #import <objc/runtime.h>
 #import <stdlib.h>
 
+@interface CGVirtualDisplayMode : NSObject
+- (instancetype)initWithWidth:(NSUInteger)width height:(NSUInteger)height refreshRate:(double)refreshRate;
+@end
+
+@interface CGVirtualDisplay : NSObject
+- (instancetype)initWithDescriptor:(id)descriptor;
+- (BOOL)applySettings:(id)settings;
+- (uint32_t)displayID;
+@end
+
 struct AndmonVirtualDisplay {
     void *retainedDisplay;
     uint32_t displayID;
@@ -18,40 +28,18 @@ static NSError *AndmonError(NSString *message) {
                            userInfo:@{NSLocalizedDescriptionKey: message}];
 }
 
-static BOOL RequireSelector(Class cls, SEL selector, BOOL classMethod, NSError **error) {
-    BOOL found = classMethod ? [cls respondsToSelector:selector] : [cls instancesRespondToSelector:selector];
-    if (!found && error) {
-        *error = AndmonError([NSString stringWithFormat:@"%@ is missing selector %@",
-                              NSStringFromClass(cls), NSStringFromSelector(selector)]);
-    }
-    return found;
-}
-
 AndmonVirtualDisplay *AndmonVirtualDisplayCreate(void **errorOut) {
     NSError *error = nil;
     id descriptor = nil;
-    id modeAllocated = nil;
-    id mode = nil;
+    CGVirtualDisplayMode *mode = nil;
     id settings = nil;
-    id displayAllocated = nil;
-    id display = nil;
+    CGVirtualDisplay *display = nil;
     Class descriptorClass = NSClassFromString(@"CGVirtualDisplayDescriptor");
     Class modeClass = NSClassFromString(@"CGVirtualDisplayMode");
     Class settingsClass = NSClassFromString(@"CGVirtualDisplaySettings");
     Class displayClass = NSClassFromString(@"CGVirtualDisplay");
     if (!descriptorClass || !modeClass || !settingsClass || !displayClass) {
         error = AndmonError(@"Private CGVirtualDisplay runtime classes are unavailable");
-        goto fail;
-    }
-
-    SEL modeInit = NSSelectorFromString(@"initWithWidth:height:refreshRate:");
-    SEL displayInit = NSSelectorFromString(@"initWithDescriptor:");
-    SEL applySettings = NSSelectorFromString(@"applySettings:");
-    SEL displayIDSelector = NSSelectorFromString(@"displayID");
-    if (!RequireSelector(modeClass, modeInit, NO, &error) ||
-        !RequireSelector(displayClass, displayInit, NO, &error) ||
-        !RequireSelector(displayClass, applySettings, NO, &error) ||
-        !RequireSelector(displayClass, displayIDSelector, NO, &error)) {
         goto fail;
     }
 
@@ -77,27 +65,24 @@ AndmonVirtualDisplay *AndmonVirtualDisplayCreate(void **errorOut) {
     [descriptor setValue:[NSValue valueWithPoint:NSMakePoint(0.3000, 0.6000)] forKey:@"greenPrimary"];
     [descriptor setValue:[NSValue valueWithPoint:NSMakePoint(0.6400, 0.3300)] forKey:@"redPrimary"];
 
-    modeAllocated = ((id (*)(id, SEL))objc_msgSend)(modeClass, sel_registerName("alloc"));
-    mode = ((id (*)(id, SEL, NSUInteger, NSUInteger, double))objc_msgSend)(
-        modeAllocated, modeInit, 1480, 924, 60.0);
+    mode = [[modeClass alloc] initWithWidth:1480 height:924 refreshRate:60.0];
     settings = [settingsClass new];
     [settings setValue:@[mode] forKey:@"modes"];
     [settings setValue:@1 forKey:@"hiDPI"];
     [settings setValue:@0 forKey:@"rotation"];
 
-    displayAllocated = ((id (*)(id, SEL))objc_msgSend)(displayClass, sel_registerName("alloc"));
-    display = ((id (*)(id, SEL, id))objc_msgSend)(displayAllocated, displayInit, descriptor);
+    display = [[displayClass alloc] initWithDescriptor:descriptor];
     if (!display) {
         error = AndmonError(@"CGVirtualDisplay initialization failed");
         goto fail;
     }
-    BOOL applied = ((BOOL (*)(id, SEL, id))objc_msgSend)(display, applySettings, settings);
+    BOOL applied = [display applySettings:settings];
     if (!applied) {
         error = AndmonError(@"CGVirtualDisplay rejected the requested HiDPI mode");
         goto fail;
     }
 
-    uint32_t displayID = ((uint32_t (*)(id, SEL))objc_msgSend)(display, displayIDSelector);
+    uint32_t displayID = [display displayID];
     CGDisplayModeRef currentMode = CGDisplayCopyDisplayMode(displayID);
     size_t logicalWidth = currentMode ? CGDisplayModeGetWidth(currentMode) : 0;
     size_t logicalHeight = currentMode ? CGDisplayModeGetHeight(currentMode) : 0;

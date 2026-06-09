@@ -16,7 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     override init() {
         let bitrate = Self.migrateBitrate(in: .standard)
-        session = HostSession(bitrate: bitrate)
+        let audioEnabled = UserDefaults.standard.object(forKey: "audioEnabled") as? Bool ?? true
+        session = HostSession(bitrate: bitrate, audioEnabled: audioEnabled)
         super.init()
     }
 
@@ -32,7 +33,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             UserDefaults.standard.set(bitrate, forKey: "bitrate")
             self?.session.setBitrate(bitrate)
         }
+        vm.onAudioToggle = { [weak self] enabled in
+            UserDefaults.standard.set(enabled, forKey: "audioEnabled")
+            self?.session.setAudioEnabled(enabled)
+        }
         vm.bitrateMbps = Double(Self.migrateBitrate(in: .standard)) / 1_000_000.0
+        vm.audioEnabled = UserDefaults.standard.object(forKey: "audioEnabled") as? Bool ?? true
 
         session.onStatus = { [weak self] status in
             self?.viewModel?.status = status

@@ -47,22 +47,35 @@ final class HostSession: @unchecked Sendable {
     private var manuallyStopped = true
     private var currentStatus: HostStatus?
     private var bitrate: Int
+    private var audioEnabled = true
+    private var isRuntimeStopping = false
+    private var stopCompletions: [@Sendable () -> Void] = []
     var onStatus: (@MainActor (HostStatus) -> Void)?
     var onMetrics: (@MainActor (SessionMetrics) -> Void)?
 
     init(
-        bitrate: Int = CaptureEncoder.defaultBitrate
+        bitrate: Int = CaptureEncoder.defaultBitrate,
+        audioEnabled: Bool = true
     ) {
         self.bitrate = bitrate
+        self.audioEnabled = audioEnabled
     }
-
-
 
     func setBitrate(_ bitrate: Int) {
         stateQueue.async { [weak self] in
             guard let self, self.bitrate != bitrate else { return }
             self.bitrate = bitrate
             fputs("Selected bitrate=\(bitrate); applying on next encoder start\n", stderr)
+            guard !manuallyStopped, let transport, display != nil else { return }
+            restartEncoder(using: transport)
+        }
+    }
+
+    func setAudioEnabled(_ enabled: Bool) {
+        stateQueue.async { [weak self] in
+            guard let self, self.audioEnabled != enabled else { return }
+            self.audioEnabled = enabled
+            fputs("Selected audioEnabled=\(enabled); applying on next encoder start\n", stderr)
             guard !manuallyStopped, let transport, display != nil else { return }
             restartEncoder(using: transport)
         }
@@ -211,6 +224,7 @@ final class HostSession: @unchecked Sendable {
         let config: [String: Any] = [
             "width": 2960, "height": 1848, "fps": 60,
             "bitrate": bitrate, "dataRateLimit": bitrate, "codec": "video/hevc",
+            "audioEnabled": audioEnabled,
         ]
         try transport.send(type: .config, payload: try JSONSerialization.data(withJSONObject: config))
         try sendPing(using: transport, purpose: .negotiation)
@@ -340,7 +354,7 @@ final class HostSession: @unchecked Sendable {
     private func startStreaming() throws {
         guard let display, let transport else { throw SessionError.incompleteGate }
         let streamer = CaptureEncoder(
-            displayID: display.displayID, transport: transport, bitrate: bitrate
+            displayID: display.displayID, transport: transport, bitrate: bitrate, audioEnabled: audioEnabled
         )
         streamer.onMetrics = { [weak self, weak streamerRef = streamer] metrics in
             guard let self, let streamerRef else { return }
@@ -404,26 +418,52 @@ final class HostSession: @unchecked Sendable {
     }
 
     private func stopRuntime(completion: (@Sendable () -> Void)? = nil) {
-        let displayToClose = self.display
-        let streamer = self.streamer
-        let transport = self.transport
-        self.streamer = nil
-        self.transport = nil
-        restartingEncoder = false
-        receiverWaiting = false
-        self.display = nil
+        if isRuntimeStopping {
+            if let completion {
+                stopCompletions.append(completion)
+            }
+            return
+        }
+
         cancelHeartbeat()
         cancelPendingPing()
-        if let streamer {
-            streamer.stop {
-                displayToClose?.close()
-                completion?()
-            }
-        } else {
-            displayToClose?.close()
-        }
+
+        let transport = self.transport
+        self.transport = nil
         transport?.close()
-        if streamer == nil { completion?() }
+
+        restartingEncoder = false
+        receiverWaiting = false
+
+        let displayToClose = self.display
+        let streamerToClose = self.streamer
+
+        guard streamerToClose != nil || displayToClose != nil else {
+            completion?()
+            return
+        }
+
+        isRuntimeStopping = true
+        if let completion {
+            stopCompletions.append(completion)
+        }
+
+        self.display = nil
+        self.streamer = nil
+
+        displayToClose?.close()
+
+        if let streamerToClose {
+            streamerToClose.stop()
+        }
+
+        self.stateQueue.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self else { return }
+            self.isRuntimeStopping = false
+            let completions = self.stopCompletions
+            self.stopCompletions.removeAll()
+            completions.forEach { $0() }
+        }
     }
 
     private func publish(_ status: HostStatus) {

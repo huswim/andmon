@@ -30,6 +30,7 @@ protocol errors. All JSON payloads are UTF-8.
 | `STOP` | 7 | Either | Optional UTF-8 reason |
 | `ERROR` | 8 | Either | JSON diagnostic |
 | `KEYFRAME_REQUEST` | 9 | Android -> Mac | Empty payload requesting an IDR access unit |
+| `AUDIO` | 10 | Mac -> Android | One raw Opus audio packet |
 
 `VIDEO` flag bit `0` marks an IDR access unit. `ptsMicros` is the presentation
 timestamp in microseconds and is meaningful for `VIDEO`.
@@ -51,12 +52,13 @@ The host rejects mismatched panel dimensions, creates the virtual monitor, and
 sends:
 
 ```json
-{"width":2960,"height":1848,"fps":60,"bitrate":12000000,"dataRateLimit":12000000,"codec":"video/hevc"}
+{"width":2960,"height":1848,"fps":60,"bitrate":12000000,"dataRateLimit":12000000,"codec":"video/hevc","audioEnabled":true}
 ```
 
 The host sends an initial `PING` and waits for the matching `PONG` before
 starting capture. Codec parameter sets are sent as `CODEC_CONFIG` before the first
 `VIDEO`, after reconnect, and whenever VideoToolbox produces new values.
+`audioEnabled` is an optional boolean indicating if system audio streaming is enabled.
 While streaming, the host sends a heartbeat `PING` every two seconds. If Android
 does not return the matching `PONG` within three seconds, the host stops capture,
 deactivates the virtual display, and publishes `Negotiating`. The host creates a

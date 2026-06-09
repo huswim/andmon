@@ -282,6 +282,11 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
         status.text = message
         status.visibility = if (message.startsWith("Streaming")) View.GONE else View.VISIBLE
         updateOverlayVisibility()
+        if (message == "Waiting for USB cable") {
+            handler.postDelayed({
+                reconnectAttachedAccessory()
+            }, 1000)
+        }
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {

@@ -10,6 +10,7 @@ enum MessageType: UInt8, Sendable {
     case stop = 7
     case error = 8
     case keyframeRequest = 9
+    case audio = 10
 }
 
 struct WireFrame: Equatable, Sendable {

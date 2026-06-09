@@ -3,12 +3,14 @@ package dev.andmon.receiver
 import android.hardware.usb.UsbAccessory
 import android.hardware.usb.UsbManager
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import android.view.Surface
 import org.json.JSONObject
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 class AccessorySession(
     private val usbManager: UsbManager,
@@ -25,9 +27,12 @@ class AccessorySession(
     private var streamConfig: StreamConfig? = null
     private val pendingPongs = mutableListOf<ByteArray>()
     private val keyframeRecovery = KeyframeRecovery()
+    private val audioPlayer = OpusAudioPlayer()
     private val decodeQueue = ArrayBlockingQueue<WireFrame>(2)
     private var decodeThread: Thread? = null
-    private var nextSequence = 1L
+    private val nextSequence = AtomicLong(1L)
+    private val writeLock = Any()
+    private val configLock = Any()
     var usbVideoDrops = 0
 
     val isOpen: Boolean
@@ -39,12 +44,20 @@ class AccessorySession(
     val videoBitrate: String
         get() = streamConfig?.let { "${it.bitrate / 1_000_000} Mbps" } ?: "-"
 
-    @Synchronized
     fun updateSurface(surface: Surface?) {
-        this.surface = surface
-        if (surface == null) {
-            configured = false
-            decoder.close()
+        val needsClose = synchronized(this) {
+            this.surface = surface
+            if (surface == null) {
+                configured = false
+                true
+            } else {
+                false
+            }
+        }
+        if (needsClose) {
+            synchronized(configLock) {
+                decoder.close()
+            }
         } else {
             configureDecoderIfReady()
         }
@@ -63,6 +76,12 @@ class AccessorySession(
         val fd = usbManager.openAccessory(accessory)
         if (fd == null) {
             onStatus("Unable to open USB accessory")
+            Thread {
+                Thread.sleep(2000)
+                if (!running.get()) {
+                    onStatus("Waiting for USB cable")
+                }
+            }.start()
             return
         }
         descriptor = fd
@@ -92,8 +111,8 @@ class AccessorySession(
     private fun helloLoop(panelWidth: Int, panelHeight: Int) {
         while (running.get()) {
             Thread.sleep(1_000)
-            synchronized(this) {
-                if (running.get() && streamConfig == null) sendHello(panelWidth, panelHeight)
+            if (running.get() && streamConfig == null) {
+                sendHello(panelWidth, panelHeight)
             }
         }
     }
@@ -143,10 +162,15 @@ class AccessorySession(
     }
 
     private fun handle(frame: WireFrame) {
+        if (frame.type != MessageType.VIDEO && frame.type != MessageType.PING && frame.type != MessageType.PONG) {
+            Log.d("AccessorySession", "[DEBUG-AND-SESSION] Received frame type: ${frame.type}, size: ${frame.payload.size}")
+        }
         when (frame.type) {
             MessageType.CONFIG -> {
                 try {
-                    val config = JSONObject(frame.payload.toString(Charsets.UTF_8))
+                    val configStr = frame.payload.toString(Charsets.UTF_8)
+                    Log.d("AccessorySession", "[DEBUG-AND-SESSION] Received CONFIG payload: $configStr")
+                    val config = JSONObject(configStr)
                     configure(
                         StreamConfig.validated(
                             config.getInt("width"),
@@ -154,6 +178,7 @@ class AccessorySession(
                             config.getInt("fps"),
                             config.getInt("bitrate"),
                             config.getString("codec"),
+                            config.optBoolean("audioEnabled", false)
                         ),
                     )
                 } catch (error: Exception) {
@@ -175,6 +200,11 @@ class AccessorySession(
                     decodeQueue.offer(frame)
                 }
             }
+            MessageType.AUDIO -> {
+                if (configured && streamConfig?.audioEnabled == true) {
+                    audioPlayer.queue(frame.payload)
+                }
+            }
             MessageType.PING -> pongWhenReady(frame.payload)
             MessageType.STOP -> {
                 onStatus("Stopped by Mac")
@@ -185,48 +215,87 @@ class AccessorySession(
         }
     }
 
-    @Synchronized
     private fun configure(config: StreamConfig) {
-        streamConfig = config
-        if (surface == null) {
-            configured = false
-            onStatus("Waiting for display surface")
-            return
+        val needsConfig = synchronized(this) {
+            streamConfig = config
+            if (surface == null) {
+                configured = false
+                onStatus("Waiting for display surface")
+                false
+            } else {
+                true
+            }
         }
-        configureDecoderIfReady()
+        if (needsConfig) {
+            configureDecoderIfReady()
+        }
     }
 
     private fun configureDecoderIfReady() {
-        val target = surface ?: return
-        val config = streamConfig ?: return
-        try {
-            decoder.configure(target, config.width, config.height)
-        } catch (error: Exception) {
-            reject("Unable to configure HEVC decoder: ${error.message}")
-            return
+        val target: Surface
+        val config: StreamConfig
+        synchronized(this) {
+            target = surface ?: return
+            config = streamConfig ?: return
         }
-        configured = true
+        synchronized(configLock) {
+            synchronized(this) {
+                if (surface != target || streamConfig != config) return
+            }
+            try {
+                decoder.configure(target, config.width, config.height)
+            } catch (error: Exception) {
+                reject("Unable to configure HEVC decoder: ${error.message}")
+                return
+            }
+            synchronized(this) {
+                configured = true
+            }
+        }
         onStatus("Streaming ${config.width} x ${config.height}")
-        pendingPongs.forEach { send(MessageType.PONG, it) }
-        pendingPongs.clear()
+        if (config.audioEnabled) {
+            audioPlayer.start()
+        } else {
+            audioPlayer.stop()
+        }
+        val pongsToSend = synchronized(this) {
+            val list = pendingPongs.toList()
+            pendingPongs.clear()
+            list
+        }
+        pongsToSend.forEach { send(MessageType.PONG, it) }
     }
 
-    @Synchronized
     private fun pongWhenReady(payload: ByteArray) {
-        if (streamConfig != null && !configured) {
-            pendingPongs += payload
-        } else {
+        val shouldSend = synchronized(this) {
+            if (streamConfig != null && !configured) {
+                pendingPongs += payload
+                false
+            } else {
+                true
+            }
+        }
+        if (shouldSend) {
             send(MessageType.PONG, payload)
         }
     }
 
-    @Synchronized
     private fun send(type: MessageType, payload: ByteArray = byteArrayOf()) {
         if (!running.get()) return
-        val bytes = WireProtocol.encode(WireFrame(type, sequence = nextSequence++, payload = payload))
-        output?.run {
-            write(bytes)
-            flush()
+        try {
+            val seq = nextSequence.getAndIncrement()
+            val bytes = WireProtocol.encode(WireFrame(type, sequence = seq, payload = payload))
+            synchronized(writeLock) {
+                output?.run {
+                    write(bytes)
+                    flush()
+                }
+            }
+        } catch (error: Exception) {
+            if (running.get()) {
+                onStatus("USB send error: ${error.message}")
+                close()
+            }
         }
     }
 
@@ -236,17 +305,21 @@ class AccessorySession(
         close()
     }
 
-    @Synchronized
     fun close() {
-        running.set(false)
-        configured = false
-        streamConfig = null
-        pendingPongs.clear()
-        keyframeRecovery.reset()
-        decodeQueue.clear()
+        if (!running.getAndSet(false)) return
+        synchronized(this) {
+            configured = false
+            streamConfig = null
+            pendingPongs.clear()
+            keyframeRecovery.reset()
+            decodeQueue.clear()
+        }
+        audioPlayer.stop()
         decodeThread?.interrupt()
         decodeThread = null
-        decoder.close()
+        synchronized(configLock) {
+            decoder.close()
+        }
         input?.runCatching { close() }
         output?.runCatching { close() }
         descriptor?.runCatching { close() }

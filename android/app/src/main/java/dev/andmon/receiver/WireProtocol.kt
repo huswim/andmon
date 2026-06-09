@@ -5,7 +5,8 @@ import java.nio.ByteOrder
 
 enum class MessageType(val value: Int) {
     HELLO(1), CONFIG(2), CODEC_CONFIG(3), VIDEO(4),
-    PING(5), PONG(6), STOP(7), ERROR(8), KEYFRAME_REQUEST(9);
+    PING(5), PONG(6), STOP(7), ERROR(8), KEYFRAME_REQUEST(9),
+    AUDIO(10);
 
     companion object {
         fun fromValue(value: Int): MessageType =

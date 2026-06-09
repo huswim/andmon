@@ -4,6 +4,8 @@ import CoreGraphics
 import Foundation
 import ScreenCaptureKit
 import VideoToolbox
+import AudioToolbox
+import AVFoundation
 
 final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     static let defaultBitrate = 12_000_000
@@ -12,8 +14,10 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
     private let displayID: CGDirectDisplayID
     private let transport: USBTransport
     private let bitrate: Int
+    private let audioEnabled: Bool
     private let captureQueue = DispatchQueue(label: "dev.andmon.capture")
     private var stream: SCStream?
+    private var audioStream: SCStream?
     private var compression: VTCompressionSession?
     private let encoderStateLock = NSLock()
     private var loggedCaptureFormat = false
@@ -31,10 +35,17 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
     private var encoderInputDrops = 0
     var onMetrics: (@Sendable (SessionMetrics) -> Void)?
 
-    init(displayID: CGDirectDisplayID, transport: USBTransport, bitrate: Int) {
+    private var audioConverter: AudioConverterRef?
+    private var audioSamplesBuffer: [Float] = []
+    private var audioStartPTS: CMTime?
+    private var totalAudioFramesEncoded: Int64 = 0
+    private var debugAudioCount = 0
+
+    init(displayID: CGDirectDisplayID, transport: USBTransport, bitrate: Int, audioEnabled: Bool) {
         self.displayID = displayID
         self.transport = transport
         self.bitrate = bitrate
+        self.audioEnabled = audioEnabled
     }
 
     func start() async throws {
@@ -60,13 +71,23 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
         configuration.colorSpaceName = CGColorSpace.sRGB
         configuration.showsCursor = true
 
+        if audioEnabled {
+            configuration.capturesAudio = true
+            configuration.excludesCurrentProcessAudio = true
+            configuration.sampleRate = 48000
+        }
+
         try createCompressionSession()
+        setupAudioConverter()
         let stream = SCStream(
             filter: SCContentFilter(display: display, excludingWindows: []),
             configuration: configuration,
             delegate: self
         )
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: captureQueue)
+        if audioEnabled {
+            try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: captureQueue)
+        }
         self.stream = stream
         startMetrics()
         try await stream.startCapture()
@@ -77,16 +98,64 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
         self.stream = nil
         metricsTimer?.cancel()
         metricsTimer = nil
+        finishStop()
+        cleanUpAudioConverter()
         guard let stream else {
-            finishStop()
             completion()
             return
         }
+        completion()
         Task {
             try? await stream.stopCapture()
-            finishStop()
-            completion()
         }
+    }
+
+    private func setupAudioConverter() {
+        guard audioEnabled else { return }
+        var inputFormat = AudioStreamBasicDescription(
+            mSampleRate: 48000.0,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+            mBytesPerPacket: 8,
+            mFramesPerPacket: 1,
+            mBytesPerFrame: 8,
+            mChannelsPerFrame: 2,
+            mBitsPerChannel: 32,
+            mReserved: 0
+        )
+
+        var outputFormat = AudioStreamBasicDescription(
+            mSampleRate: 48000.0,
+            mFormatID: kAudioFormatOpus,
+            mFormatFlags: 0,
+            mBytesPerPacket: 0,
+            mFramesPerPacket: 960, // 20ms frame
+            mBytesPerFrame: 0,
+            mChannelsPerFrame: 2,
+            mBitsPerChannel: 0,
+            mReserved: 0
+        )
+
+        var converter: AudioConverterRef?
+        let status = AudioConverterNew(&inputFormat, &outputFormat, &converter)
+        if status == noErr {
+            audioConverter = converter
+
+            var bitrate: UInt32 = 64000
+            AudioConverterSetProperty(converter!, kAudioConverterEncodeBitRate, UInt32(MemoryLayout<UInt32>.size), &bitrate)
+        } else {
+            fputs("Failed to create AudioConverter for Opus: \(status)\n", stderr)
+        }
+    }
+
+    private func cleanUpAudioConverter() {
+        if let audioConverter {
+            self.audioConverter = nil
+            AudioConverterDispose(audioConverter)
+        }
+        audioSamplesBuffer.removeAll()
+        audioStartPTS = nil
+        totalAudioFramesEncoded = 0
     }
 
     private func finishStop() {
@@ -106,40 +175,199 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .screen, let imageBuffer = sampleBuffer.imageBuffer, let compression else { return }
-        if !loggedCaptureFormat {
-            loggedCaptureFormat = true
-            fputs(
-                "capture format=\(fourCC(CVPixelBufferGetPixelFormatType(imageBuffer))) " +
-                    "size=\(CVPixelBufferGetWidth(imageBuffer))x\(CVPixelBufferGetHeight(imageBuffer))\n",
-                stderr
+        if type == .screen {
+            guard let imageBuffer = sampleBuffer.imageBuffer, let compression else { return }
+            if !loggedCaptureFormat {
+                loggedCaptureFormat = true
+                fputs(
+                    "capture format=\(fourCC(CVPixelBufferGetPixelFormatType(imageBuffer))) " +
+                        "size=\(CVPixelBufferGetWidth(imageBuffer))x\(CVPixelBufferGetHeight(imageBuffer))\n",
+                    stderr
+                )
+            }
+            metricsLock.withLock { capturedFrames += 1 }
+            let admission = encoderStateLock.withLock { () -> (accepted: Bool, properties: CFDictionary?) in
+                guard inFlightFrames < Self.maxInFlightFrames else { return (false, nil) }
+                inFlightFrames += 1
+                guard forceKeyframe else { return (true, nil) }
+                forceKeyframe = false
+                return (true, [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary)
+            }
+            guard admission.accepted else {
+                metricsLock.withLock { encoderInputDrops += 1 }
+                return
+            }
+            let timing = Unmanaged.passRetained(
+                EncodedFrameTiming(startNanoseconds: DispatchTime.now().uptimeNanoseconds)
             )
+            let status = VTCompressionSessionEncodeFrame(
+                compression, imageBuffer: imageBuffer,
+                presentationTimeStamp: sampleBuffer.presentationTimeStamp,
+                duration: sampleBuffer.duration, frameProperties: admission.properties,
+                sourceFrameRefcon: timing.toOpaque(), infoFlagsOut: nil
+            )
+            if status != noErr {
+                timing.release()
+                encoderStateLock.withLock { inFlightFrames -= 1 }
+                if admission.properties != nil { requestKeyframe() }
+            }
+        } else if type == .audio {
+            guard audioEnabled, let audioConverter else { return }
+            debugAudioCount += 1
+            if debugAudioCount % 100 == 1 {
+                fputs("[DEBUG-MAC-AUDIO] received audio buffer from SCK, count = \(debugAudioCount)\n", stderr)
+            }
+            processAudioBuffer(sampleBuffer, converter: audioConverter)
         }
-        metricsLock.withLock { capturedFrames += 1 }
-        let admission = encoderStateLock.withLock { () -> (accepted: Bool, properties: CFDictionary?) in
-            guard inFlightFrames < Self.maxInFlightFrames else { return (false, nil) }
-            inFlightFrames += 1
-            guard forceKeyframe else { return (true, nil) }
-            forceKeyframe = false
-            return (true, [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary)
+    }
+
+    private func processAudioBuffer(_ sampleBuffer: CMSampleBuffer, converter: AudioConverterRef) {
+        guard sampleBuffer.isValid else { return }
+
+        try? sampleBuffer.withAudioBufferList { audioBufferList, blockBuffer in
+            let bufferCount = audioBufferList.count
+            guard bufferCount > 0 else { return }
+
+            var interleaved: [Float] = []
+
+            if bufferCount >= 2 {
+                let leftBuffer = audioBufferList[0]
+                let rightBuffer = audioBufferList[1]
+                let sampleCount = Int(leftBuffer.mDataByteSize) / MemoryLayout<Float>.size
+                guard let leftPtr = leftBuffer.mData?.assumingMemoryBound(to: Float.self),
+                      let rightPtr = rightBuffer.mData?.assumingMemoryBound(to: Float.self) else { return }
+
+                interleaved.reserveCapacity(sampleCount * 2)
+                for i in 0..<sampleCount {
+                    interleaved.append(leftPtr[i])
+                    interleaved.append(rightPtr[i])
+                }
+            } else if bufferCount == 1 {
+                let buffer = audioBufferList[0]
+                let channels = Int(buffer.mNumberChannels)
+                let sampleCount = Int(buffer.mDataByteSize) / (MemoryLayout<Float>.size * channels)
+                guard let pcmPtr = buffer.mData?.assumingMemoryBound(to: Float.self) else { return }
+
+                if channels == 2 {
+                    interleaved = Array(UnsafeBufferPointer(start: pcmPtr, count: sampleCount * 2))
+                } else if channels == 1 {
+                    interleaved.reserveCapacity(sampleCount * 2)
+                    for i in 0..<sampleCount {
+                        let val = pcmPtr[i]
+                        interleaved.append(val)
+                        interleaved.append(val)
+                    }
+                }
+            }
+
+            guard !interleaved.isEmpty else { return }
+
+            audioSamplesBuffer.append(contentsOf: interleaved)
+
+            if audioStartPTS == nil {
+                audioStartPTS = sampleBuffer.presentationTimeStamp
+            }
+
+            let frameSize = 960
+            while audioSamplesBuffer.count >= frameSize * 2 {
+                let chunk = Array(audioSamplesBuffer[0..<(frameSize * 2)])
+                audioSamplesBuffer.removeFirst(frameSize * 2)
+
+                encodeAudioChunk(chunk, converter: converter)
+            }
         }
-        guard admission.accepted else {
-            metricsLock.withLock { encoderInputDrops += 1 }
-            return
+    }
+
+    private func encodeAudioChunk(_ pcmData: [Float], converter: AudioConverterRef) {
+        class InterleavedInputState {
+            var data: UnsafeRawPointer
+            var byteSize: UInt32
+            init(data: UnsafeRawPointer, byteSize: UInt32) {
+                self.data = data
+                self.byteSize = byteSize
+            }
         }
-        let timing = Unmanaged.passRetained(
-            EncodedFrameTiming(startNanoseconds: DispatchTime.now().uptimeNanoseconds)
+
+        let inputState = InterleavedInputState(
+            data: pcmData.withUnsafeBytes { $0.baseAddress! },
+            byteSize: UInt32(pcmData.count * MemoryLayout<Float>.size)
         )
-        let status = VTCompressionSessionEncodeFrame(
-            compression, imageBuffer: imageBuffer,
-            presentationTimeStamp: sampleBuffer.presentationTimeStamp,
-            duration: sampleBuffer.duration, frameProperties: admission.properties,
-            sourceFrameRefcon: timing.toOpaque(), infoFlagsOut: nil
-        )
-        if status != noErr {
-            timing.release()
-            encoderStateLock.withLock { inFlightFrames -= 1 }
-            if admission.properties != nil { requestKeyframe() }
+
+        let inputCallback: AudioConverterComplexInputDataProc = { (
+            inAudioConverter: AudioConverterRef,
+            ioNumberDataPackets: UnsafeMutablePointer<UInt32>,
+            ioData: UnsafeMutablePointer<AudioBufferList>,
+            outDataPacketDescription: UnsafeMutablePointer<UnsafeMutablePointer<AudioStreamPacketDescription>?>?,
+            inUserData: UnsafeMutableRawPointer?
+        ) -> OSStatus in
+            let state = Unmanaged<InterleavedInputState>.fromOpaque(inUserData!).takeUnretainedValue()
+            if state.byteSize == 0 {
+                ioNumberDataPackets.pointee = 0
+                return 1
+            }
+
+            let requestedPackets = ioNumberDataPackets.pointee
+            let bytesPerPacket: UInt32 = 8
+            let availablePackets = state.byteSize / bytesPerPacket
+            let packetsToProvide = min(requestedPackets, availablePackets)
+
+            ioNumberDataPackets.pointee = packetsToProvide
+
+            ioData.pointee.mNumberBuffers = 1
+            ioData.pointee.mBuffers.mNumberChannels = 2
+            ioData.pointee.mBuffers.mDataByteSize = packetsToProvide * bytesPerPacket
+            ioData.pointee.mBuffers.mData = UnsafeMutableRawPointer(mutating: state.data)
+
+            state.data = state.data.advanced(by: Int(packetsToProvide * bytesPerPacket))
+            state.byteSize -= packetsToProvide * bytesPerPacket
+
+            return noErr
+        }
+
+        var outputBuffer = [UInt8](repeating: 0, count: 2048)
+        var outputBufferList = AudioBufferList()
+        outputBufferList.mNumberBuffers = 1
+        outputBufferList.mBuffers.mNumberChannels = 2
+        outputBufferList.mBuffers.mDataByteSize = UInt32(outputBuffer.count)
+
+        outputBuffer.withUnsafeMutableBytes { rawBuf in
+            outputBufferList.mBuffers.mData = rawBuf.baseAddress
+
+            var ioOutputDataPackets: UInt32 = 1
+            var packetDescriptions = [AudioStreamPacketDescription](repeating: AudioStreamPacketDescription(), count: 1)
+
+            let userPtr = Unmanaged.passUnretained(inputState).toOpaque()
+            let status = AudioConverterFillComplexBuffer(
+                converter,
+                inputCallback,
+                userPtr,
+                &ioOutputDataPackets,
+                &outputBufferList,
+                &packetDescriptions
+            )
+
+            if status == noErr || status == 1 {
+                if ioOutputDataPackets > 0 {
+                    let desc = packetDescriptions[0]
+                    let encodedData = Data(bytes: rawBuf.baseAddress!.assumingMemoryBound(to: UInt8.self).advanced(by: Int(desc.mStartOffset)), count: Int(desc.mDataByteSize))
+
+                    let startPTSMicros = audioStartPTS.map { UInt64(max(0.0, $0.seconds * 1_000_000.0)) } ?? 0
+                    let ptsMicros = startPTSMicros + UInt64((totalAudioFramesEncoded * 1_000_000) / 48000)
+
+                    if totalAudioFramesEncoded % (960 * 100) == 0 {
+                        fputs("[DEBUG-MAC-AUDIO] Encoded Opus packet size=\(encodedData.count), pts=\(ptsMicros)\n", stderr)
+                    }
+
+                    do {
+                        try transport.send(type: .audio, ptsMicros: ptsMicros, payload: encodedData)
+                        totalAudioFramesEncoded += 960
+                    } catch {
+                        fputs("Audio packet transport failed: \(error)\n", stderr)
+                    }
+                }
+            } else {
+                fputs("[DEBUG-MAC-AUDIO] AudioConverterFillComplexBuffer failed: \(status)\n", stderr)
+            }
         }
     }
 
@@ -300,6 +528,7 @@ enum StreamError: LocalizedError {
     case screenRecordingPermissionRequired
     case virtualDisplayNotCapturable
     case encoderCreationFailed(OSStatus)
+    case mainDisplayNotFound
 
     var errorDescription: String? {
         switch self {
@@ -309,6 +538,8 @@ enum StreamError: LocalizedError {
             "The Andmon virtual display is not capturable by ScreenCaptureKit"
         case .encoderCreationFailed(let status):
             "Unable to create the HEVC encoder: \(status)"
+        case .mainDisplayNotFound:
+            "Unable to find the main display for audio capture"
         }
     }
 }
