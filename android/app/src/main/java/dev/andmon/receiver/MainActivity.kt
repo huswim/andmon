@@ -35,6 +35,13 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     private var lastRenderFrameCount = 0
     private var overlaysVisible = true
+    private var touchStartX = 0f
+    private var touchStartY = 0f
+    private var touchLastX = 0f
+    private var touchLastY = 0f
+    private var isDragMode = false
+    private var isScrollActive = false
+    private var longPressRunnable: Runnable? = null
 
     private val telemetryRunnable = object : Runnable {
         override fun run() {
@@ -147,6 +154,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
             leftMargin = 40
         }
 
+        surfaceView.isHapticFeedbackEnabled = true
         surfaceView.setOnTouchListener { v, event ->
             val config = session.activeConfig
             val action = event.actionMasked
@@ -162,6 +170,8 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
             // Toggle overlay if two fingers touch the screen
             if (event.pointerCount >= 2 && action == MotionEvent.ACTION_POINTER_DOWN) {
+                longPressRunnable?.let { handler.removeCallbacks(it) }
+                longPressRunnable = null
                 overlaysVisible = !overlaysVisible
                 updateOverlayVisibility()
                 return@setOnTouchListener true
@@ -182,16 +192,67 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 val normalizedX = (x / width).coerceIn(0f, 1f)
                 val normalizedY = (y / height).coerceIn(0f, 1f)
 
-                val protoAction = when (action) {
-                    MotionEvent.ACTION_DOWN -> 0
-                    MotionEvent.ACTION_MOVE -> 1
-                    MotionEvent.ACTION_UP -> 2
-                    MotionEvent.ACTION_CANCEL -> 2
-                    else -> -1
-                }
+                when (action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        touchStartX = x
+                        touchStartY = y
+                        touchLastX = x
+                        touchLastY = y
+                        isDragMode = false
+                        isScrollActive = false
 
-                if (protoAction >= 0) {
-                    session.sendTouchEvent(protoAction, normalizedX, normalizedY)
+                        // Start 500ms long-press timer for drag/select mode
+                        longPressRunnable?.let { handler.removeCallbacks(it) }
+                        val runnable = Runnable {
+                            isDragMode = true
+                            v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                            val normStartX = (touchStartX / width).coerceIn(0f, 1f)
+                            val normStartY = (touchStartY / height).coerceIn(0f, 1f)
+                            session.sendTouchEvent(0, normStartX, normStartY)
+                        }
+                        longPressRunnable = runnable
+                        handler.postDelayed(runnable, 500)
+                    }
+
+                    MotionEvent.ACTION_MOVE -> {
+                        val distance = Math.hypot((x - touchStartX).toDouble(), (y - touchStartY).toDouble()).toFloat()
+                        val touchSlop = android.view.ViewConfiguration.get(this@MainActivity).scaledTouchSlop.toFloat()
+
+                        if (isDragMode) {
+                            session.sendTouchEvent(1, normalizedX, normalizedY)
+                        } else {
+                            if (!isScrollActive) {
+                                if (distance > touchSlop) {
+                                    longPressRunnable?.let { handler.removeCallbacks(it) }
+                                    longPressRunnable = null
+                                    isScrollActive = true
+                                }
+                            }
+                            if (isScrollActive) {
+                                val dx = x - touchLastX
+                                val dy = y - touchLastY
+                                session.sendScrollEvent(dx, dy)
+                            }
+                        }
+                        touchLastX = x
+                        touchLastY = y
+                    }
+
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        longPressRunnable?.let { handler.removeCallbacks(it) }
+                        longPressRunnable = null
+
+                        if (isDragMode) {
+                            session.sendTouchEvent(2, normalizedX, normalizedY)
+                        } else if (!isScrollActive) {
+                            val normStartX = (touchStartX / width).coerceIn(0f, 1f)
+                            val normStartY = (touchStartY / height).coerceIn(0f, 1f)
+                            session.sendTouchEvent(0, normStartX, normStartY)
+                            session.sendTouchEvent(2, normStartX, normStartY)
+                        }
+                        isDragMode = false
+                        isScrollActive = false
+                    }
                 }
             }
             true

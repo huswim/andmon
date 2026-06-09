@@ -300,6 +300,16 @@ class AccessorySession(
         send(MessageType.TOUCH, payload)
     }
 
+    fun sendScrollEvent(dx: Float, dy: Float) {
+        val payload = JSONObject()
+            .put("action", 3)
+            .put("dx", dx.toDouble())
+            .put("dy", dy.toDouble())
+            .toString()
+            .toByteArray(Charsets.UTF_8)
+        send(MessageType.TOUCH, payload)
+    }
+
     private fun send(type: MessageType, payload: ByteArray = byteArrayOf()) {
         if (!running.get()) return
         try {

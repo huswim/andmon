@@ -72,4 +72,14 @@ struct WireProtocolTests {
         #expect(frames[0].type == .touch)
         #expect(frames[0].payload == payload)
     }
+
+    @Test func scrollFrame() throws {
+        var parser = FrameParser()
+        let payload = Data("{\"action\":3,\"dx\":10.0,\"dy\":-2.5}".utf8)
+        let touch = try WireFrame(type: .touch, payload: payload).encoded()
+        let frames = try parser.append(touch)
+        #expect(frames.count == 1)
+        #expect(frames[0].type == .touch)
+        #expect(frames[0].payload == payload)
+    }
 }

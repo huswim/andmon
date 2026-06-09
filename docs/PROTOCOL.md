@@ -76,13 +76,21 @@ access unit so the low-latency receiver can resume from a valid reference frame.
 
 If `touchEnabled` is configured true, Android captures touch events on the display surface and sends them to the Mac as `TOUCH` messages:
 
-```json
-{"action":0,"x":0.5,"y":0.5}
-```
+* **Cursor Movement / Click**:
+  ```json
+  {"action":0,"x":0.5,"y":0.5}
+  ```
+  Where:
+  * `action` is `0` (touch down), `1` (touch move/drag), or `2` (touch up).
+  * `x` and `y` are normalized floats from `0.0` to `1.0`.
 
-Where:
-* `action` is `0` (touch down), `1` (touch move/drag), or `2` (touch up).
-* `x` and `y` are normalized floats from `0.0` to `1.0`.
+* **Scroll**:
+  ```json
+  {"action":3,"dx":12.5,"dy":-4.0}
+  ```
+  Where:
+  * `action` is `3` (swipe scrolling).
+  * `dx` and `dy` are relative pixel offsets since the last touch event.
 
 
 ## AOA Connection Handshake & Identification

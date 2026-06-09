@@ -187,8 +187,42 @@ final class HostSession: @unchecked Sendable {
 
     private func handleTouch(_ payload: Data) throws {
         guard let json = try JSONSerialization.jsonObject(with: payload) as? [String: Any],
-              let action = json["action"] as? Int,
-              let x = json["x"] as? Double,
+              let action = json["action"] as? Int else {
+            return
+        }
+
+        if action == 3 {
+            guard var dx = json["dx"] as? Double,
+                  var dy = json["dy"] as? Double else {
+                return
+            }
+
+            // Detect macOS natural scrolling setting and invert deltas if disabled
+            var naturalScroll = true
+            if let globalDefaults = UserDefaults.standard.persistentDomain(forName: UserDefaults.globalDomain),
+               let swipescroll = globalDefaults["com.apple.swipescrolldirection"] as? Bool {
+                naturalScroll = swipescroll
+            }
+            if !naturalScroll {
+                dx = -dx
+                dy = -dy
+            }
+
+            DispatchQueue.main.async {
+                let event = CGEvent(
+                    scrollWheelEvent2Source: nil,
+                    units: .pixel,
+                    wheelCount: 2,
+                    wheel1: Int32(dy),
+                    wheel2: Int32(dx),
+                    wheel3: 0
+                )
+                event?.post(tap: .cghidEventTap)
+            }
+            return
+        }
+
+        guard let x = json["x"] as? Double,
               let y = json["y"] as? Double else {
             return
         }
@@ -214,10 +248,12 @@ final class HostSession: @unchecked Sendable {
             return
         }
 
-        guard let event = CGEvent(mouseEventSource: nil, mouseType: mouseType, mouseCursorPosition: point, mouseButton: .left) else {
-            return
+        DispatchQueue.main.async {
+            guard let event = CGEvent(mouseEventSource: nil, mouseType: mouseType, mouseCursorPosition: point, mouseButton: .left) else {
+                return
+            }
+            event.post(tap: .cghidEventTap)
         }
-        event.post(tap: .cghidEventTap)
     }
 
     private func handleHello(_ payload: Data) throws {
