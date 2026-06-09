@@ -1,6 +1,19 @@
 import Foundation
 import CoreGraphics
 
+private typealias CGSConnectionID = Int32
+
+@_silgen_name("CGSMainConnectionID")
+private func CGSMainConnectionID() -> CGSConnectionID
+
+@_silgen_name("CGSSetConnectionProperty")
+private func CGSSetConnectionProperty(
+    _ cid: CGSConnectionID,
+    _ targetCID: CGSConnectionID,
+    _ property: CFString,
+    _ value: CFTypeRef
+) -> Int32
+
 struct SessionMetrics: Sendable, Equatable {
     var capturedFPS: Int = 0
     var encodedFPS: Int = 0
@@ -65,6 +78,9 @@ final class HostSession: @unchecked Sendable {
         self.bitrate = bitrate
         self.audioEnabled = audioEnabled
         self.touchEnabled = touchEnabled
+
+        let cid = CGSMainConnectionID()
+        _ = CGSSetConnectionProperty(cid, cid, "SetsCursorInBackground" as CFString, kCFBooleanTrue)
     }
 
     func setBitrate(_ bitrate: Int) {
