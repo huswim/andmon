@@ -72,16 +72,47 @@ If Android drops a video access unit because its decoder has no immediately
 available input buffer, it sends `KEYFRAME_REQUEST`. The host forces a new IDR
 access unit so the low-latency receiver can resume from a valid reference frame.
 
-## AOA Identification
+## AOA Connection Handshake & Identification
 
-The host uses AOA request `51` to query protocol support, request `52` to send
-identification strings, and request `53` to enter accessory mode.
+Before the bulk stream starts, the macOS host identifies the connected Android device and performs a handshake to switch it into Accessory Mode.
 
-```text
-manufacturer = "Andmon"
-model        = "Galaxy Tab S8 Ultra Submonitor"
-description  = "Wired extended desktop receiver"
-version      = "1.0"
-uri          = "https://localhost/andmon"
-serial       = "andmon-mvp"
-```
+### USB Control Transfers
+
+The host uses standard AOA control requests (standard USB requests with vendor-specific values):
+
+1. **Get Protocol (Request 51)**: Query if the device supports the Android Accessory Protocol.
+   * `bmRequestType`: `0xC0` (Device-to-Host, Vendor, Device)
+   * `bRequest`: 51
+   * `wValue`: 0
+   * `wIndex`: 0
+   * `wLength`: 2
+   * Returns the protocol version (must be >= 1).
+
+2. **Send Identification (Request 52)**: Send identification strings to the device.
+   * `bmRequestType`: `0x40` (Host-to-Device, Vendor, Device)
+   * `bRequest`: 52
+   * `wValue`: 0
+   * `wIndex`: String index (0 to 5)
+   * `wLength`: String length + 1 (null-terminated)
+   * `data`: The identification string.
+
+3. **Start Accessory (Request 53)**: Request the device to restart in accessory mode.
+   * `bmRequestType`: `0x40` (Host-to-Device, Vendor, Device)
+   * `bRequest`: 53
+   * `wValue`: 0
+   * `wIndex`: 0
+   * `wLength`: 0
+
+### Identification Strings
+
+The host sends the following identification strings to identify itself to the Android OS:
+
+| Index | Field | Value |
+| :--- | :--- | :--- |
+| 0 | Manufacturer | `Andmon` |
+| 1 | Model | `Galaxy Tab S8 Ultra Submonitor` |
+| 2 | Description | `Wired extended desktop receiver` |
+| 3 | Version | `1.0` |
+| 4 | URI | `https://localhost/andmon` |
+| 5 | Serial Number | `andmon-mvp` |
+

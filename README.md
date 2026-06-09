@@ -6,9 +6,9 @@ for an Apple-silicon Mac. The runtime path is:
 1. The macOS menu bar host switches the tablet into Android Open Accessory (AOA)
    mode through `libusb`.
 2. Android launches the native accessory receiver and sends `HELLO`.
-3. The host creates a private `CGVirtualDisplay`, captures it with
-   ScreenCaptureKit, encodes HEVC with VideoToolbox, and streams Annex B access
-   units over the accessory bulk endpoints.
+3. The host creates a private `CGVirtualDisplay` alongside a SwiftUI menu bar UI.
+   It captures video and audio with ScreenCaptureKit, encodes HEVC with VideoToolbox
+   and Opus with AudioToolbox, then streams them over the accessory bulk endpoints.
 4. Android decodes HEVC directly into a landscape `SurfaceView`.
 
 This is a direct-run prototype. It uses undocumented macOS APIs and is not
@@ -122,12 +122,14 @@ The `references/` symlinks point to the local AOA throughput tester and virtual
 display CLI used to validate this MVP. Measured verified Mac-to-Android AOA
 throughput reached `16.3 MiB/s`, with a raw ceiling of `20.2 MiB/s`.
 
-The status-bar `Bitrate` menu selects `12`, `20`, `30`, `40`, `60`, `80`, or
-`100 Mbps`. Changing the selection restarts only the active encoder so the new
-value takes effect without reopening USB or recreating the virtual display. The
-encoder uses `AverageBitRate` with a one-second `DataRateLimits` cap. Recoverable
-connection failures deactivate the virtual display before retrying and create a
-fresh display only after the tablet reconnects. The default `12 Mbps` HEVC
-stream leaves comfortable headroom.
+The dynamic SwiftUI menu bar popover provides real-time encoding metrics and a
+slider to adjust the streaming bitrate dynamically between `10` and `100 Mbps`.
+Changing the bitrate restarts only the active encoder so the new value takes
+effect without reopening USB or recreating the virtual display. The UI also
+includes a toggle for the low-latency Opus audio stream. The encoder uses
+`AverageBitRate` with a one-second `DataRateLimits` cap. Recoverable connection
+failures deactivate the virtual display before retrying and create a fresh
+display only after the tablet reconnects. The default `12 Mbps` HEVC stream
+leaves comfortable headroom.
 
-See [protocol/PROTOCOL.md](protocol/PROTOCOL.md) for the wire format.
+See [docs/PROTOCOL.md](docs/PROTOCOL.md) for the wire format.
