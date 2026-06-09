@@ -66,7 +66,7 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
         // producing frames while the current frame is in flight.
         configuration.queueDepth = 3
         configuration.captureResolution = .best
-        configuration.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+        configuration.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         configuration.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
         configuration.colorSpaceName = CGColorSpace.sRGB
         configuration.showsCursor = true
