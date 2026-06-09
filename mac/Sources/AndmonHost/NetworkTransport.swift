@@ -5,7 +5,7 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
     private let tabletIP: String
     private let writeQueue = DispatchQueue(label: "dev.andmon.net.writer")
     private let readQueue = DispatchQueue(label: "dev.andmon.net.reader")
-    private let lock = NSLock()
+    let lock = NSLock() // accessed internally
     
     private var tcpConnection: NWConnection?
     private var udpConnection: NWConnection?
@@ -17,6 +17,15 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
     private var tcpParser = FrameParser()
     private var pendingWrites: [PendingWrite] = []
     private var writerScheduled = false
+    
+    private let fecEncoder = FECEncoder()
+    private var tcpTimeoutWork: DispatchWorkItem?
+    
+    // Configured parameters (updated dynamically by NetworkQualityMonitor or PopoverView)
+    var autoOptimizationEnabled: Bool = true
+    var fecType: UInt8 = 1
+    var fecGroupSize: UInt8 = 5
+    var pacingIntervalMicroseconds: UInt32 = 200
     
     var onFrame: (@Sendable (WireFrame) -> Void)?
     var onDisconnect: (@Sendable (Error) -> Void)?
@@ -48,9 +57,42 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
             running = true
         }
         
-        // TCP Connection Setup
-        let tcpConn = NWConnection(host: NWEndpoint.Host(tabletIP), port: 8001, using: .tcp)
+        // TCP Configuration
+        let tcpParams = NWParameters.tcp
+        if let tcpOptions = tcpParams.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
+            tcpOptions.noDelay = true
+            tcpOptions.enableKeepalive = true
+            tcpOptions.keepaliveIdle = 2
+            tcpOptions.keepaliveInterval = 1
+            tcpOptions.keepaliveCount = 3
+        }
+        
+        let tcpConn = NWConnection(host: NWEndpoint.Host(tabletIP), port: 8001, using: tcpParams)
         self.tcpConnection = tcpConn
+        
+        // 5s connection timeout handler
+        let timeoutWork = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            var shouldDisconnect = false
+            self.lock.withLock {
+                if let conn = self.tcpConnection {
+                    switch conn.state {
+                    case .ready:
+                        break
+                    default:
+                        shouldDisconnect = true
+                    }
+                }
+            }
+            if shouldDisconnect {
+                fputs("Network Transport: TCP connection timeout after 5s\n", stderr)
+                self.disconnect(NSError(domain: "NetworkTransport", code: 1, userInfo: [NSLocalizedDescriptionKey: "TCP Connection timed out after 5 seconds"]))
+            }
+        }
+        lock.withLock {
+            self.tcpTimeoutWork = timeoutWork
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5.0, execute: timeoutWork)
         
         tcpConn.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
@@ -58,6 +100,10 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
             switch state {
             case .ready:
                 fputs("Network Transport: TCP Connected to \(self.tabletIP):8001\n", stderr)
+                self.lock.withLock {
+                    self.tcpTimeoutWork?.cancel()
+                    self.tcpTimeoutWork = nil
+                }
                 self.startTcpReadLoop()
             case .waiting(let error):
                 self.disconnect(error)
@@ -71,8 +117,11 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
         }
         tcpConn.start(queue: readQueue)
         
-        // UDP Connection Setup
-        let udpConn = NWConnection(host: NWEndpoint.Host(tabletIP), port: 8002, using: .udp)
+        // UDP Configuration
+        let udpParams = NWParameters.udp
+        udpParams.serviceClass = .responsiveData // Prioritizes low latency & DSCP marking
+        
+        let udpConn = NWConnection(host: NWEndpoint.Host(tabletIP), port: 8002, using: udpParams)
         self.udpConnection = udpConn
         
         udpConn.stateUpdateHandler = { [weak self] state in
@@ -146,7 +195,7 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
                     replacedVideo = true
                 }
             }
-            pendingWrites.append(PendingWrite(type: type, sequence: seq, bytes: bytes))
+            pendingWrites.append(PendingWrite(type: type, flags: flags, sequence: seq, bytes: bytes))
             queuedBytes += bytes.count
             guard !writerScheduled else { return (false, replacedVideo) }
             writerScheduled = true
@@ -181,7 +230,7 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
                     replacedVideo = true
                 }
             }
-            pendingWrites.append(PendingWrite(type: type, sequence: seq, bytes: bytes))
+            pendingWrites.append(PendingWrite(type: type, flags: flags, sequence: seq, bytes: bytes))
             queuedBytes += bytes.count
             guard !writerScheduled else { return (false, replacedVideo) }
             writerScheduled = true
@@ -231,8 +280,48 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
         guard let conn = udpConnection, lock.withLock({ running }) else { return }
         
         let maxPayload = 1400
+        var dataChunks: [Data] = []
+        
         if bytes.count <= maxPayload {
-            let chunk = makeChunk(frameID: sequence, chunkIndex: 0, totalChunks: 1, payload: bytes)
+            dataChunks.append(bytes)
+        } else {
+            let totalChunks = Int(ceil(Double(bytes.count) / Double(maxPayload)))
+            for i in 0..<totalChunks {
+                let offset = i * maxPayload
+                let length = min(maxPayload, bytes.count - offset)
+                dataChunks.append(bytes.subdata(in: offset..<(offset + length)))
+            }
+        }
+        
+        let localFecType = lock.withLock { self.fecType }
+        let localFecGroupSize = lock.withLock { self.fecGroupSize }
+        let pacingInterval = lock.withLock { self.pacingIntervalMicroseconds }
+        
+        let finalChunks: [Data]
+        if localFecType == 1 && localFecGroupSize > 0 {
+            finalChunks = fecEncoder.encode(dataChunks: dataChunks, groupSize: Int(localFecGroupSize))
+        } else {
+            finalChunks = dataChunks
+        }
+        
+        let numData = dataChunks.count
+        let totalCount = finalChunks.count
+        
+        for i in 0..<totalCount {
+            guard lock.withLock({ self.running }) else { break }
+            let payload = finalChunks[i]
+            let isParity = i >= numData
+            
+            let chunk = makeChunk(
+                frameID: sequence,
+                chunkIndex: UInt16(i),
+                totalChunks: UInt16(totalCount),
+                fecType: localFecType,
+                fecGroupSize: localFecGroupSize,
+                isParity: isParity,
+                payload: payload
+            )
+            
             conn.send(content: chunk, completion: .contentProcessed { [weak self] error in
                 if let error {
                     self?.disconnect(error)
@@ -240,35 +329,16 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
                     self?.lock.withLock { self?.sentBytes += chunk.count }
                 }
             })
-            usleep(200)
-        } else {
-            let totalChunks = Int(ceil(Double(bytes.count) / Double(maxPayload)))
-            for i in 0..<totalChunks {
-                guard lock.withLock({ self.running }) else { break }
-                let offset = i * maxPayload
-                let length = min(maxPayload, bytes.count - offset)
-                let subdata = bytes.subdata(in: offset..<(offset + length))
-                
-                let chunk = makeChunk(frameID: sequence, chunkIndex: UInt16(i), totalChunks: UInt16(totalChunks), payload: subdata)
-                
-                conn.send(content: chunk, completion: .contentProcessed { [weak self] error in
-                    if let error {
-                        self?.disconnect(error)
-                    } else {
-                        self?.lock.withLock { self?.sentBytes += chunk.count }
-                    }
-                })
-                
-                // Pacing: Sleep 200 microseconds every 3 chunks (batching) to avoid OS scheduling delay overshoot
-                if (i + 1) % 3 == 0 || i == totalChunks - 1 {
-                    usleep(200)
-                }
+            
+            // Pacing every 3 chunks
+            if (i + 1) % 3 == 0 || i == totalCount - 1 {
+                usleep(pacingInterval)
             }
         }
     }
     
-    private func makeChunk(frameID: UInt32, chunkIndex: UInt16, totalChunks: UInt16, payload: Data) -> Data {
-        var data = Data(capacity: 12 + payload.count)
+    private func makeChunk(frameID: UInt32, chunkIndex: UInt16, totalChunks: UInt16, fecType: UInt8, fecGroupSize: UInt8, isParity: Bool, payload: Data) -> Data {
+        var data = Data(capacity: 16 + payload.count)
         data.append(contentsOf: "ANDU".utf8)
         
         var bigFrameID = frameID.bigEndian
@@ -280,8 +350,63 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
         var bigTotal = totalChunks.bigEndian
         withUnsafeBytes(of: &bigTotal) { data.append(contentsOf: $0) }
         
+        data.append(fecType)
+        data.append(fecGroupSize)
+        
+        let flags: UInt8 = isParity ? 1 : 0
+        data.append(flags)
+        
+        data.append(0) // reserved alignment padding
+        
         data.append(payload)
         return data
+    }
+    
+    func purgePendingVideoFrames() {
+        lock.withLock {
+            var indicesToRemove: [Int] = []
+            for index in pendingWrites.indices {
+                let p = pendingWrites[index]
+                // Only drop video non-keyframes (P-frames).
+                // Audio packets and video keyframes (flags == 1) are preserved.
+                if p.type == .video && p.flags == 0 {
+                    indicesToRemove.append(index)
+                }
+            }
+            for index in indicesToRemove.reversed() {
+                queuedBytes -= pendingWrites[index].bytes.count
+                pendingWrites.remove(at: index)
+                replacedVideoFrames += 1
+            }
+        }
+    }
+    
+    func updateAutoOptimization(enabled: Bool) {
+        lock.withLock {
+            self.autoOptimizationEnabled = enabled
+            if !enabled {
+                self.fecType = 1
+                self.fecGroupSize = 5
+                self.pacingIntervalMicroseconds = 200
+            }
+        }
+    }
+    
+    func updateManualFec(size: Int) {
+        lock.withLock {
+            self.fecGroupSize = UInt8(size)
+            if size == 0 {
+                self.fecType = 0
+            } else {
+                self.fecType = 1
+            }
+        }
+    }
+    
+    func updatePacingInterval(_ interval: UInt32) {
+        lock.withLock {
+            self.pacingIntervalMicroseconds = interval
+        }
     }
     
     func close() {
@@ -291,6 +416,9 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
             pendingWrites.removeAll()
             queuedBytes = 0
             writerScheduled = false
+            
+            tcpTimeoutWork?.cancel()
+            tcpTimeoutWork = nil
         }
         
         tcpConnection?.cancel()
@@ -307,6 +435,7 @@ final class NetworkTransport: AndmonTransport, @unchecked Sendable {
 
 private struct PendingWrite {
     let type: MessageType
+    let flags: UInt16
     let sequence: UInt32
     let bytes: Data
 }

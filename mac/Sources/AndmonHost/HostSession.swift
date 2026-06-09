@@ -34,6 +34,13 @@ struct SessionMetrics: Sendable, Equatable {
     var wifiRssi: Int = -127
     var wifiLinkSpeedMbps: Int = 0
     var networkThroughputMbps: Double = 0.0
+    
+    // ABR & FEC Telemetry
+    var effectiveBitrateMbps: Double = 12.0
+    var fecGroupSize: Int = 5
+    var packetLossRate: Double = 0.0
+    var fecRecoveries: Int = 0
+    var abrMode: String = "Stable"
 
     init(
         capturedFPS: Int = 0,
@@ -47,7 +54,12 @@ struct SessionMetrics: Sendable, Equatable {
         rttMs: Double = 0.0,
         wifiRssi: Int = -127,
         wifiLinkSpeedMbps: Int = 0,
-        networkThroughputMbps: Double = 0.0
+        networkThroughputMbps: Double = 0.0,
+        effectiveBitrateMbps: Double = 12.0,
+        fecGroupSize: Int = 5,
+        packetLossRate: Double = 0.0,
+        fecRecoveries: Int = 0,
+        abrMode: String = "Stable"
     ) {
         self.capturedFPS = capturedFPS
         self.encodedFPS = encodedFPS
@@ -61,6 +73,11 @@ struct SessionMetrics: Sendable, Equatable {
         self.wifiRssi = wifiRssi
         self.wifiLinkSpeedMbps = wifiLinkSpeedMbps
         self.networkThroughputMbps = networkThroughputMbps
+        self.effectiveBitrateMbps = effectiveBitrateMbps
+        self.fecGroupSize = fecGroupSize
+        self.packetLossRate = packetLossRate
+        self.fecRecoveries = fecRecoveries
+        self.abrMode = abrMode
     }
 }
 
@@ -119,6 +136,12 @@ final class HostSession: @unchecked Sendable {
     private var pingSentTimeNanoseconds: UInt64 = 0
     private var lastThroughputTimeNanoseconds: UInt64 = 0
     
+    // Quality Optimization Variables
+    private let qualityMonitor = NetworkQualityMonitor()
+    private var autoOptimizationEnabled: Bool = true
+    private var lastWifiLossRate: Double = 0.0
+    private var lastFecRecoveries: Int = 0
+    
     var onStatus: (@MainActor (HostStatus) -> Void)?
     var onMetrics: (@MainActor (SessionMetrics) -> Void)?
 
@@ -135,15 +158,102 @@ final class HostSession: @unchecked Sendable {
 
         let cid = CGSMainConnectionID()
         _ = CGSSetConnectionProperty(cid, cid, "SetsCursorInBackground" as CFString, kCFBooleanTrue)
+        
+        setupQualityMonitor()
+    }
+    
+    private func setupQualityMonitor() {
+        let queue = self.stateQueue
+        qualityMonitor.onBitrateChanged = { [weak self, queue] newBitrate in
+            queue.async { [weak self] in
+                self?.streamer?.updateBitrate(newBitrate)
+            }
+        }
+        
+        qualityMonitor.onFecGroupSizeChanged = { [weak self, queue] newFecGroupSize in
+            queue.async { [weak self] in
+                guard let self else { return }
+                if let netTransport = self.transport as? NetworkTransport {
+                    netTransport.updateManualFec(size: newFecGroupSize)
+                }
+            }
+        }
+        
+        qualityMonitor.onPacingIntervalChanged = { [weak self, queue] pacing in
+            queue.async { [weak self] in
+                guard let self else { return }
+                if let netTransport = self.transport as? NetworkTransport {
+                    netTransport.updatePacingInterval(pacing)
+                }
+            }
+        }
+        
+        qualityMonitor.onQueuePurgeTriggered = { [weak self, queue] in
+            queue.async { [weak self] in
+                guard let self else { return }
+                if let netTransport = self.transport as? NetworkTransport {
+                    netTransport.purgePendingVideoFrames()
+                    
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 0.016) { [weak self, queue] in
+                        queue.async { [weak self] in
+                            self?.streamer?.requestKeyframe()
+                        }
+                    }
+                }
+            }
+        }
     }
 
     func setBitrate(_ bitrate: Int) {
         stateQueue.async { [weak self] in
             guard let self, self.bitrate != bitrate else { return }
             self.bitrate = bitrate
-            fputs("Selected bitrate=\(bitrate); applying on next encoder start\n", stderr)
-            guard !manuallyStopped, let transport, display != nil else { return }
-            restartEncoder(using: transport)
+            fputs("Selected bitrate=\(bitrate); updating dynamically\n", stderr)
+            let targetMax = self.connectionMode == .wireless ? min(20_000_000, bitrate) : bitrate
+            self.qualityMonitor.setMaxBitrate(targetMax)
+            if !self.autoOptimizationEnabled {
+                self.streamer?.updateBitrate(bitrate)
+            }
+        }
+    }
+    
+    func setAutoOptimizationEnabled(_ enabled: Bool) {
+        stateQueue.async { [weak self] in
+            guard let self else { return }
+            self.autoOptimizationEnabled = enabled
+            if let netTransport = self.transport as? NetworkTransport {
+                netTransport.lock.withLock {
+                    netTransport.autoOptimizationEnabled = enabled
+                    if !enabled {
+                        netTransport.fecType = 1
+                        netTransport.fecGroupSize = 5
+                        netTransport.pacingIntervalMicroseconds = 200
+                    }
+                }
+            }
+            if enabled {
+                let initialMax = self.connectionMode == .wireless ? min(20_000_000, self.bitrate) : self.bitrate
+                self.qualityMonitor.reset(initialMaxBitrate: initialMax)
+                self.streamer?.updateBitrate(self.qualityMonitor.effectiveBitrate)
+            } else {
+                self.streamer?.updateBitrate(self.bitrate)
+            }
+        }
+    }
+    
+    func setManualFecGroupSize(_ size: Int) {
+        stateQueue.async { [weak self] in
+            guard let self else { return }
+            if let netTransport = self.transport as? NetworkTransport {
+                netTransport.lock.withLock {
+                    netTransport.fecGroupSize = UInt8(size)
+                    if size == 0 {
+                        netTransport.fecType = 0
+                    } else {
+                        netTransport.fecType = 1
+                    }
+                }
+            }
         }
     }
 
@@ -258,6 +368,8 @@ final class HostSession: @unchecked Sendable {
                 var token = frame.payload
                 var rssi: Int? = nil
                 var linkSpeed: Int? = nil
+                var fecRecoveries: Int? = nil
+                var packetLossRate: Double? = nil
                 
                 do {
                     if let json = try JSONSerialization.jsonObject(with: frame.payload, options: []) as? [String: Any] {
@@ -266,6 +378,8 @@ final class HostSession: @unchecked Sendable {
                         }
                         rssi = json["rssi"] as? Int
                         linkSpeed = json["linkSpeed"] as? Int
+                        fecRecoveries = json["fecRecoveries"] as? Int
+                        packetLossRate = json["packetLossRate"] as? Double
                     }
                 } catch {
                     // Fall back to treating payload as raw token bytes
@@ -280,6 +394,8 @@ final class HostSession: @unchecked Sendable {
                 
                 if let rssi { lastWifiRssi = rssi }
                 if let linkSpeed { lastWifiLinkSpeed = linkSpeed }
+                if let packetLossRate { self.lastWifiLossRate = packetLossRate }
+                if let fecRecoveries { self.lastFecRecoveries = fecRecoveries }
                 
                 let purpose = pingPurpose
                 cancelPendingPing()
@@ -662,10 +778,20 @@ final class HostSession: @unchecked Sendable {
         self.lastWifiLinkSpeed = 0
         self.lastThroughputMbps = 0.0
         
+        let initialBitrate: Int
+        if self.connectionMode == .wireless && self.autoOptimizationEnabled {
+            let initialMax = min(20_000_000, self.bitrate)
+            self.qualityMonitor.reset(initialMaxBitrate: initialMax)
+            initialBitrate = self.qualityMonitor.effectiveBitrate
+            fputs("HostSession: Starting wireless streaming with ABR initial bitrate = \(initialBitrate) bps (max = \(initialMax))\n", stderr)
+        } else {
+            initialBitrate = self.bitrate
+        }
+        
         let streamer = CaptureEncoder(
             displayID: display.displayID,
             transport: transport,
-            bitrate: bitrate,
+            bitrate: initialBitrate,
             maxFrameRate: maxFrameRate,
             audioEnabled: audioEnabled
         )
@@ -686,10 +812,23 @@ final class HostSession: @unchecked Sendable {
                 self.lastThroughputMbps = throughputMbps
                 updatedMetrics.networkThroughputMbps = throughputMbps
                 
+                if self.connectionMode == .wireless && self.autoOptimizationEnabled {
+                    self.qualityMonitor.updateMetrics(
+                        rttMs: self.lastRttMs >= 0 ? self.lastRttMs : 0.0,
+                        packetLossRate: self.lastWifiLossRate,
+                        throughputBytesPerSec: Int(self.lastThroughputMbps * 125_000.0)
+                    )
+                }
+                
                 if self.connectionMode == .wireless {
                     updatedMetrics.rttMs = self.lastRttMs
                     updatedMetrics.wifiRssi = self.lastWifiRssi
                     updatedMetrics.wifiLinkSpeedMbps = self.lastWifiLinkSpeed
+                    updatedMetrics.effectiveBitrateMbps = Double(self.qualityMonitor.effectiveBitrate) / 1_000_000.0
+                    updatedMetrics.fecGroupSize = self.qualityMonitor.fecGroupSize
+                    updatedMetrics.packetLossRate = self.lastWifiLossRate
+                    updatedMetrics.fecRecoveries = self.lastFecRecoveries
+                    updatedMetrics.abrMode = self.qualityMonitor.abrMode
                 }
                 
                 Task { @MainActor in

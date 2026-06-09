@@ -1,6 +1,7 @@
 package dev.andmon.receiver
 
 import android.util.Log
+import android.os.Build
 import android.view.Surface
 import android.content.Context
 import android.net.ConnectivityManager
@@ -28,6 +29,12 @@ class UdpFrameAssembler(private val onVideoLoss: () -> Unit) {
     private val buffers = ConcurrentHashMap<Long, FrameBuffer>()
     private val checkTimer = java.util.Timer("andu-cleanup-timer", true)
 
+    val fecRecoveryCount = AtomicLong(0)
+    val fecFailureCount = AtomicLong(0)
+    val totalUdpPacketsExpected = AtomicLong(0)
+    val totalUdpPacketsLost = AtomicLong(0)
+    private var lastLossResetTime = System.currentTimeMillis()
+
     init {
         checkTimer.scheduleAtFixedRate(object : java.util.TimerTask() {
             override fun run() {
@@ -36,15 +43,26 @@ class UdpFrameAssembler(private val onVideoLoss: () -> Unit) {
         }, 10, 10)
     }
 
-    class FrameBuffer(val totalChunks: Int) {
+    class FrameBuffer(val totalChunks: Int, val numData: Int, val groupSize: Int) {
         val createdAt = System.currentTimeMillis()
         val chunks = arrayOfNulls<ByteArray>(totalChunks)
         var receivedCount = 0
         var isVideo = false
     }
 
+    fun calculateDataChunks(totalChunks: Int, groupSize: Int): Int {
+        if (groupSize <= 0) return totalChunks
+        for (d in 1..totalChunks) {
+            val p = (d + groupSize - 1) / groupSize
+            if (d + p == totalChunks) {
+                return d
+            }
+        }
+        return totalChunks
+    }
+
     fun handleChunk(packetData: ByteArray, length: Int): ByteArray? {
-        if (length < 12) return null
+        if (length < 16) return null
         
         // Parse ANDU header
         if (packetData[0] != 'A'.code.toByte() || packetData[1] != 'N'.code.toByte() ||
@@ -52,20 +70,27 @@ class UdpFrameAssembler(private val onVideoLoss: () -> Unit) {
             return null
         }
 
-        val buffer = ByteBuffer.wrap(packetData, 4, 8).order(ByteOrder.BIG_ENDIAN)
+        val buffer = ByteBuffer.wrap(packetData, 4, 12).order(ByteOrder.BIG_ENDIAN)
         val frameID = buffer.int.toLong() and 0xffffffffL
         val chunkIndex = buffer.short.toInt() and 0xffff
         val totalChunks = buffer.short.toInt() and 0xffff
+        val fecType = buffer.get().toInt() and 0xff
+        val fecGroupSize = buffer.get().toInt() and 0xff
+        val flags = buffer.get().toInt() and 0xff
+        val reserved = buffer.get().toInt() and 0xff
         
         if (chunkIndex >= totalChunks || totalChunks == 0) return null
         
-        val payloadSize = length - 12
+        val payloadSize = length - 16
         if (payloadSize <= 0) return null
         val payload = ByteArray(payloadSize)
-        System.arraycopy(packetData, 12, payload, 0, payloadSize)
+        System.arraycopy(packetData, 16, payload, 0, payloadSize)
+
+        val numData = calculateDataChunks(totalChunks, fecGroupSize)
 
         val frameBuf = buffers.computeIfAbsent(frameID) {
-            FrameBuffer(totalChunks)
+            totalUdpPacketsExpected.addAndGet(totalChunks.toLong())
+            FrameBuffer(totalChunks, numData, fecGroupSize)
         }
 
         synchronized(frameBuf) {
@@ -80,8 +105,17 @@ class UdpFrameAssembler(private val onVideoLoss: () -> Unit) {
                         frameBuf.isVideo = true
                     }
                 }
+                
+                // Attempt FEC recovery if FEC is active
+                if (fecType == 1 && fecGroupSize > 0) {
+                    val g = if (chunkIndex < numData) chunkIndex / fecGroupSize else chunkIndex - numData
+                    val numParity = (numData + fecGroupSize - 1) / fecGroupSize
+                    if (g in 0 until numParity) {
+                        attemptFecRecoveryForGroup(frameBuf, g, fecGroupSize, numData)
+                    }
+                }
 
-                if (frameBuf.receivedCount == frameBuf.totalChunks) {
+                if (isComplete(frameBuf)) {
                     buffers.remove(frameID)
                     return reassemble(frameBuf)
                 }
@@ -90,14 +124,86 @@ class UdpFrameAssembler(private val onVideoLoss: () -> Unit) {
         return null
     }
 
+    private fun isComplete(frameBuf: FrameBuffer): Boolean {
+        for (i in 0 until frameBuf.numData) {
+            if (frameBuf.chunks[i] == null) return false
+        }
+        return true
+    }
+
+    private fun attemptFecRecoveryForGroup(frameBuf: FrameBuffer, g: Int, groupSize: Int, numData: Int) {
+        val start = g * groupSize
+        val end = minOf(start + groupSize, numData)
+        val pIndex = numData + g
+        
+        // Check if parity chunk is present
+        val parityPayload = frameBuf.chunks[pIndex] ?: return
+        
+        var missingIndex = -1
+        var missingCount = 0
+        for (i in start until end) {
+            if (frameBuf.chunks[i] == null) {
+                missingIndex = i
+                missingCount++
+                if (missingCount > 1) {
+                    // FEC cannot recover if more than 1 chunk is missing in the group
+                    return
+                }
+            }
+        }
+        
+        if (missingCount == 1) {
+            // Exactly one missing chunk, recover it!
+            try {
+                val recovered = parityPayload.clone()
+                for (i in start until end) {
+                    if (i != missingIndex) {
+                        val chunk = frameBuf.chunks[i]!!
+                        val len = chunk.size
+                        val lenByte0 = (len shr 8 and 0xff).toByte()
+                        val lenByte1 = (len and 0xff).toByte()
+                        
+                        recovered[0] = (recovered[0].toInt() xor lenByte0.toInt()).toByte()
+                        recovered[1] = (recovered[1].toInt() xor lenByte1.toInt()).toByte()
+                        
+                        for (j in 0 until len) {
+                            recovered[2 + j] = (recovered[2 + j].toInt() xor chunk[j].toInt()).toByte()
+                        }
+                    }
+                }
+                
+                val len = ((recovered[0].toInt() and 0xff) shl 8) or (recovered[1].toInt() and 0xff)
+                if (len in 0..1400 && 2 + len <= recovered.size) {
+                    val recoveredPayload = ByteArray(len)
+                    System.arraycopy(recovered, 2, recoveredPayload, 0, len)
+                    frameBuf.chunks[missingIndex] = recoveredPayload
+                    frameBuf.receivedCount++
+                    fecRecoveryCount.incrementAndGet()
+                    
+                    if (missingIndex == 0 && len >= 6) {
+                        val msgType = recoveredPayload[5].toInt() and 0xff
+                        if (msgType == MessageType.VIDEO.value) {
+                            frameBuf.isVideo = true
+                        }
+                    }
+                } else {
+                    fecFailureCount.incrementAndGet()
+                }
+            } catch (e: Exception) {
+                fecFailureCount.incrementAndGet()
+            }
+        }
+    }
+
     private fun reassemble(frameBuf: FrameBuffer): ByteArray {
         var totalBytes = 0
-        for (chunk in frameBuf.chunks) {
-            totalBytes += chunk?.size ?: 0
+        for (i in 0 until frameBuf.numData) {
+            totalBytes += frameBuf.chunks[i]?.size ?: 0
         }
         val result = ByteArray(totalBytes)
         var offset = 0
-        for (chunk in frameBuf.chunks) {
+        for (i in 0 until frameBuf.numData) {
+            val chunk = frameBuf.chunks[i]
             if (chunk != null) {
                 System.arraycopy(chunk, 0, result, offset, chunk.size)
                 offset += chunk.size
@@ -115,6 +221,7 @@ class UdpFrameAssembler(private val onVideoLoss: () -> Unit) {
             val buf = entry.value
             if (now - buf.createdAt > 100) { // 100ms timeout
                 iterator.remove()
+                totalUdpPacketsLost.addAndGet((buf.totalChunks - buf.receivedCount).toLong())
                 if (buf.isVideo) {
                     reportedLoss = true
                 }
@@ -125,8 +232,28 @@ class UdpFrameAssembler(private val onVideoLoss: () -> Unit) {
         }
     }
     
+    fun getPacketLossRate(): Double {
+        val now = System.currentTimeMillis()
+        val expected = totalUdpPacketsExpected.get()
+        val lost = totalUdpPacketsLost.get()
+        
+        // Reset every 5 seconds to keep metrics dynamic
+        if (now - lastLossResetTime > 5000) {
+            totalUdpPacketsExpected.set(0)
+            totalUdpPacketsLost.set(0)
+            lastLossResetTime = now
+        }
+        
+        if (expected <= 0) return 0.0
+        return lost.toDouble() / expected.toDouble()
+    }
+    
     fun reset() {
         buffers.clear()
+        totalUdpPacketsExpected.set(0)
+        totalUdpPacketsLost.set(0)
+        fecRecoveryCount.set(0)
+        fecFailureCount.set(0)
     }
     
     fun shutdown() {
@@ -146,6 +273,7 @@ class NetworkSession(
     private var tcpServer: ServerSocket? = null
     private var udpSocket: DatagramSocket? = null
     private var clientSocket: Socket? = null
+    private var wifiLock: WifiManager.WifiLock? = null
     private var input: InputStream? = null
     private var output: OutputStream? = null
     private var surface: Surface? = null
@@ -226,20 +354,38 @@ class NetworkSession(
 
     private fun serverLoop() {
         try {
-            tcpServer = ServerSocket(8001, 50, java.net.InetAddress.getByName("0.0.0.0")).apply { reuseAddress = true }
-            Log.i("NetworkSession", "TCP server socket bound to port 8001")
+            tcpServer = ServerSocket(8001, 50, java.net.InetAddress.getByName("0.0.0.0")).apply { 
+                reuseAddress = true 
+                receiveBufferSize = 256 * 1024
+            }
+            Log.i("NetworkSession", "TCP server socket bound to port 8001 with optimized receiveBufferSize")
             
             while (running.get()) {
                 onStatus("Waiting for connection", false)
                 Log.i("NetworkSession", "TCP server listening on port 8001...")
                 val socket = tcpServer?.accept() ?: break
                 
+                // Optimize TCP Socket options
+                socket.tcpNoDelay = true
+                socket.receiveBufferSize = 256 * 1024
+                socket.keepAlive = true
+                
                 Log.i("NetworkSession", "Accepted TCP connection from ${socket.remoteSocketAddress}")
                 
                 // Dynamically recreate UDP socket for the connection lifecycle
                 try {
-                    udpSocket = DatagramSocket(8002, java.net.InetAddress.getByName("0.0.0.0")).apply { reuseAddress = true }
-                    Log.i("NetworkSession", "UDP server socket bound to port 8002")
+                    // Create unbound DatagramSocket first to set receiveBufferSize BEFORE bind (essential for some OS kernels)
+                    udpSocket = DatagramSocket(null).apply {
+                        reuseAddress = true
+                        receiveBufferSize = 2 * 1024 * 1024 // 2MB receive buffer
+                        bind(java.net.InetSocketAddress(java.net.InetAddress.getByName("0.0.0.0"), 8002))
+                        try {
+                            trafficClass = 0xB8 // DSCP EF
+                        } catch (e: Exception) {
+                            Log.w("NetworkSession", "Failed to set UDP trafficClass", e)
+                        }
+                    }
+                    Log.i("NetworkSession", "UDP server socket bound to port 8002 with optimized buffer (applied before bind) & trafficClass")
                 } catch (e: Exception) {
                     Log.e("NetworkSession", "Failed to bind UDP socket on port 8002", e)
                     socket.runCatching { close() }
@@ -251,6 +397,25 @@ class NetworkSession(
                 output = socket.getOutputStream()
                 lastActivityTime.set(System.currentTimeMillis())
                 connected.set(true)
+                
+                // Acquire low-latency WifiLock
+                try {
+                    val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                    val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        4 // WifiManager.WIFI_MODE_LOW_LATENCY (introduced in API 29)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                    }
+                    wifiLock = wifiManager?.createWifiLock(mode, "andmon:wifi_lock")?.apply {
+                        setReferenceCounted(false)
+                        acquire()
+                    }
+                    Log.i("NetworkSession", "Acquired low-latency WifiLock")
+                } catch (e: Exception) {
+                    Log.e("NetworkSession", "Failed to acquire WifiLock", e)
+                }
+                
                 registerWifiCallback()
                 
                 // Start auxiliary threads
@@ -519,11 +684,15 @@ class NetworkSession(
             try {
                 val tokenStr = String(payload, Charsets.UTF_8)
                 val wifiDetails = getLocalWifiDetails()
+                val lossRate = udpFrameAssembler?.getPacketLossRate() ?: 0.0
+                val fecRecoveries = udpFrameAssembler?.fecRecoveryCount?.get() ?: 0L
                 val json = JSONObject()
                     .put("token", tokenStr)
                     .put("rssi", wifiDetails.rssi)
                     .put("linkSpeed", wifiDetails.linkSpeedMbps)
                     .put("udpDrops", udpVideoDrops)
+                    .put("fecRecoveries", fecRecoveries)
+                    .put("packetLossRate", lossRate)
                 responsePayload = json.toString().toByteArray(Charsets.UTF_8)
             } catch (e: Exception) {
                 Log.e("NetworkSession", "Failed to build PONG JSON payload", e)
@@ -634,6 +803,19 @@ class NetworkSession(
         udpSocket = null
         
         udpFrameAssembler?.reset()
+        
+        // Release WifiLock
+        try {
+            wifiLock?.let {
+                if (it.isHeld) {
+                    it.release()
+                }
+            }
+            wifiLock = null
+            Log.i("NetworkSession", "Released WifiLock")
+        } catch (e: Exception) {
+            Log.e("NetworkSession", "Failed to release WifiLock", e)
+        }
     }
 
     private fun registerWifiCallback() {

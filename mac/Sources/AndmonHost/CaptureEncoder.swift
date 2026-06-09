@@ -16,6 +16,7 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
     private let displayID: CGDirectDisplayID
     private let transport: AndmonTransport
     private let bitrate: Int
+    private var currentBitrate: Int
     private let maxFrameRate: Int
     private let audioEnabled: Bool
     private let captureQueue = DispatchQueue(label: "dev.andmon.capture")
@@ -55,6 +56,7 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
         self.displayID = displayID
         self.transport = transport
         self.bitrate = bitrate
+        self.currentBitrate = bitrate
         self.maxFrameRate = maxFrameRate
         self.audioEnabled = audioEnabled
     }
@@ -179,6 +181,28 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
 
     func requestKeyframe() {
         encoderStateLock.withLock { forceKeyframe = true }
+    }
+
+    func updateBitrate(_ newBitrate: Int) {
+        encoderStateLock.withLock {
+            self.currentBitrate = newBitrate
+        }
+        
+        guard let session = encoderStateLock.withLock({ self.compression }) else { return }
+        
+        let avgBitrateStatus = VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: newBitrate as CFNumber)
+        if avgBitrateStatus != noErr {
+            fputs("CaptureEncoder: Failed to update AverageBitRate: \(avgBitrateStatus)\n", stderr)
+        }
+        
+        let limitBytesPerSec = newBitrate / 8
+        let limitsArray = [limitBytesPerSec, 1] as CFArray
+        let limitsStatus = VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: limitsArray)
+        if limitsStatus != noErr {
+            fputs("CaptureEncoder: Failed to update DataRateLimits: \(limitsStatus)\n", stderr)
+        }
+        
+        fputs("CaptureEncoder: Dynamically updated compression session bitrate to \(newBitrate) bps\n", stderr)
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -404,10 +428,10 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
         )
         VTSessionSetProperty(created, key: kVTCompressionPropertyKey_Quality, value: 1.0 as CFNumber)
         VTSessionSetProperty(created, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
-        VTSessionSetProperty(created, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrate as CFNumber)
+        VTSessionSetProperty(created, key: kVTCompressionPropertyKey_AverageBitRate, value: currentBitrate as CFNumber)
         VTSessionSetProperty(
             created, key: kVTCompressionPropertyKey_DataRateLimits,
-            value: [bitrate / 8, 1] as CFArray
+            value: [currentBitrate / 8, 1] as CFArray
         )
         VTSessionSetProperty(created, key: kVTCompressionPropertyKey_MaxFrameDelayCount, value: 0 as CFNumber)
         VTSessionSetProperty(created, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: maxFrameRate as CFNumber)

@@ -13,6 +13,10 @@ final class SessionViewModel {
     var launchAtLoginEnabled = false
     var connectionMode: ConnectionMode = .wired
     var tabletIP: String = ""
+    
+    // ABR & FEC UI bindings
+    var autoOptimizationEnabled = true
+    var fecGroupSize = 5
 
     var onResume: (() -> Void)?
     var onStop: (() -> Void)?
@@ -24,6 +28,8 @@ final class SessionViewModel {
     var onLaunchAtLoginToggle: ((Bool) -> Void)?
     var onModeChange: ((ConnectionMode) -> Void)?
     var onIPChange: ((String) -> Void)?
+    var onAutoOptimizationToggle: ((Bool) -> Void)?
+    var onManualFecGroupSizeChange: ((Int) -> Void)?
 }
 
 struct PopoverView: View {
@@ -40,6 +46,7 @@ struct PopoverView: View {
             
             if viewModel.connectionMode == .wireless {
                 ipAddressSection
+                optimizationSection
             }
 
             // Metrics Section (Only show details when relevant, or show zeroed metrics beautifully)
@@ -109,6 +116,52 @@ struct PopoverView: View {
             .textFieldStyle(.roundedBorder)
             .font(.system(size: 11, weight: .regular, design: .monospaced))
             .frame(maxWidth: .infinity)
+        }
+        .padding(.horizontal, 4)
+    }
+
+    // MARK: - Network Optimization Section
+    private var optimizationSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle(isOn: Binding(
+                get: { viewModel.autoOptimizationEnabled },
+                set: { newValue in
+                    viewModel.autoOptimizationEnabled = newValue
+                    viewModel.onAutoOptimizationToggle?(newValue)
+                }
+            )) {
+                HStack {
+                    Image(systemSymbolName: "gauge.badge.plus")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.green)
+                    Text("Auto Optimization (ABR+FEC)")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+            }
+            .toggleStyle(.switch)
+            
+            if !viewModel.autoOptimizationEnabled {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Manual FEC Level")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    
+                    Picker("Manual FEC Level", selection: Binding(
+                        get: { viewModel.fecGroupSize },
+                        set: { newValue in
+                            viewModel.fecGroupSize = newValue
+                            viewModel.onManualFecGroupSizeChange?(newValue)
+                        }
+                    )) {
+                        Text("Off").tag(0)
+                        Text("Low (10:1)").tag(10)
+                        Text("Medium (5:1)").tag(5)
+                        Text("High (3:1)").tag(3)
+                    }
+                    .pickerStyle(.segmented)
+                }
+                .transition(.opacity)
+            }
         }
         .padding(.horizontal, 4)
     }
@@ -223,6 +276,36 @@ struct PopoverView: View {
                         color: .teal
                     )
                 }
+                
+                HStack(spacing: 8) {
+                    metricCard(
+                        title: "Effective Bitrate",
+                        value: String(format: "%.1f Mbps (%@)", viewModel.metrics.effectiveBitrateMbps, viewModel.metrics.abrMode),
+                        icon: "bolt.fill",
+                        color: .orange
+                    )
+                    metricCard(
+                        title: "Packet Loss",
+                        value: String(format: "%.2f %%", viewModel.metrics.packetLossRate * 100.0),
+                        icon: "exclamationmark.icloud",
+                        color: .red
+                    )
+                }
+                
+                HStack(spacing: 8) {
+                    metricCard(
+                        title: "FEC Level",
+                        value: viewModel.metrics.fecGroupSize > 0 ? "1:\(viewModel.metrics.fecGroupSize) (XOR)" : "Off",
+                        icon: "shield.fill",
+                        color: .indigo
+                    )
+                    metricCard(
+                        title: "FEC Recovered",
+                        value: "\(viewModel.metrics.fecRecoveries) pkts",
+                        icon: "checkmark.shield.fill",
+                        color: .green
+                    )
+                }
             }
         }
     }
@@ -259,7 +342,7 @@ struct PopoverView: View {
     private var bitrateSection: some View {
         VStack(spacing: 6) {
             HStack {
-                Text("Streaming Bitrate")
+                Text(viewModel.autoOptimizationEnabled && viewModel.connectionMode == .wireless ? "Max Bitrate Limit" : "Streaming Bitrate")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.primary)
                 Spacer()
