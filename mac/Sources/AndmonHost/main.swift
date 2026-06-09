@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var terminating = false
     private var pulseTimer: Timer?
     private var pulseState = false
+    private var isAsleep = false
 
     override init() {
         let bitrate = Self.migrateBitrate(in: .standard)
@@ -23,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installSignalHandlers()
+        installWorkspaceNotifications()
 
         let vm = SessionViewModel()
         self.viewModel = vm
@@ -154,6 +156,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func installWorkspaceNotifications() {
+        let nc = NSWorkspace.shared.notificationCenter
+        nc.addObserver(
+            self,
+            selector: #selector(handleWillSleep),
+            name: NSWorkspace.willSleepNotification,
+            object: nil
+        )
+        nc.addObserver(
+            self,
+            selector: #selector(handleDidWake),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
+        nc.addObserver(
+            self,
+            selector: #selector(handleScreensDidSleep),
+            name: NSWorkspace.screensDidSleepNotification,
+            object: nil
+        )
+        nc.addObserver(
+            self,
+            selector: #selector(handleScreensDidWake),
+            name: NSWorkspace.screensDidWakeNotification,
+            object: nil
+        )
+    }
+
+    @objc private func handleWillSleep() {
+        guard !isAsleep else { return }
+        isAsleep = true
+        fputs("System going to sleep; stopping session cleanly\n", stderr)
+        performSyncStop()
+    }
+
+    @objc private func handleScreensDidSleep() {
+        guard !isAsleep else { return }
+        isAsleep = true
+        fputs("Screens went to sleep; stopping session cleanly\n", stderr)
+        performSyncStop()
+    }
+
+    @objc private func handleDidWake() {
+        guard isAsleep else { return }
+        isAsleep = false
+        fputs("System woke up; resuming session\n", stderr)
+        resume()
+    }
+
+    @objc private func handleScreensDidWake() {
+        guard isAsleep else { return }
+        isAsleep = false
+        fputs("Screens woke up; resuming session\n", stderr)
+        resume()
+    }
+
+    private func performSyncStop() {
+        let semaphore = DispatchSemaphore(value: 0)
+        session.stop {
+            semaphore.signal()
+        }
+        let result = semaphore.wait(timeout: .now() + 3.0)
+        if result == .timedOut {
+            fputs("Warning: session stop timed out during sleep transition\n", stderr)
+        } else {
+            fputs("Session stopped cleanly\n", stderr)
+        }
+    }
+
     private static func migrateBitrate(in defaults: UserDefaults) -> Int {
         let bitrate = validBitrate(defaults.integer(forKey: "bitrate"))
             ?? validBitrate(defaults.integer(forKey: "cbrBitrate"))
@@ -238,6 +309,8 @@ private final class AOAGateResult: @unchecked Sendable {
     }
 }
 
+private var keepAliveDelegate: AppDelegate?
+
 if CommandLine.arguments.contains("--virtual-display-gate") {
     runVirtualDisplayGate()
 } else if CommandLine.arguments.contains("--aoa-gate") {
@@ -245,6 +318,7 @@ if CommandLine.arguments.contains("--virtual-display-gate") {
 } else {
     let app = NSApplication.shared
     let delegate = AppDelegate()
+    keepAliveDelegate = delegate
     app.delegate = delegate
     app.setActivationPolicy(.accessory)
     app.run()

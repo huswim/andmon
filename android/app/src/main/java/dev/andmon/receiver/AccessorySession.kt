@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicLong
 class AccessorySession(
     private val usbManager: UsbManager,
     private val decoder: HevcSurfaceDecoder,
-    private val onStatus: (String) -> Unit,
+    private val onStatus: (String, Boolean) -> Unit,
 ) {
     private var descriptor: ParcelFileDescriptor? = null
     private var input: FileInputStream? = null
@@ -30,9 +30,11 @@ class AccessorySession(
     private val audioPlayer = OpusAudioPlayer()
     private val decodeQueue = ArrayBlockingQueue<WireFrame>(2)
     private var decodeThread: Thread? = null
+    private var watchdogThread: Thread? = null
     private val nextSequence = AtomicLong(1L)
     private val writeLock = Any()
     private val configLock = Any()
+    private val lastActivityTime = AtomicLong(0)
     var usbVideoDrops = 0
 
     val isOpen: Boolean
@@ -70,16 +72,17 @@ class AccessorySession(
             onStatus(
                 "Unsupported panel: ${panelWidth} x ${panelHeight}; expected " +
                     "${TabletProfile.PANEL_WIDTH} x ${TabletProfile.PANEL_HEIGHT}",
+                false
             )
             return
         }
         val fd = usbManager.openAccessory(accessory)
         if (fd == null) {
-            onStatus("Unable to open USB accessory")
+            onStatus("Unable to open USB accessory", false)
             Thread {
                 Thread.sleep(2000)
                 if (!running.get()) {
-                    onStatus("Waiting for USB cable")
+                    onStatus("Waiting for USB cable", false)
                 }
             }.start()
             return
@@ -87,12 +90,14 @@ class AccessorySession(
         descriptor = fd
         input = FileInputStream(fd.fileDescriptor)
         output = FileOutputStream(fd.fileDescriptor)
+        lastActivityTime.set(System.currentTimeMillis())
         running.set(true)
         sendHello(panelWidth, panelHeight)
-        onStatus("Negotiating with Mac")
+        onStatus("Negotiating with Mac", false)
         Thread({ helloLoop(panelWidth, panelHeight) }, "andmon-hello-retry").start()
         Thread({ readLoop() }, "andmon-usb-reader").start()
         decodeThread = Thread({ decodeLoop() }, "andmon-decoder").also { it.start() }
+        watchdogThread = Thread({ watchdogLoop() }, "andmon-watchdog").also { it.start() }
     }
 
     private fun sendHello(panelWidth: Int, panelHeight: Int) {
@@ -125,13 +130,14 @@ class AccessorySession(
             while (running.get()) {
                 val count = input?.read(buffer) ?: break
                 if (count < 0) break
+                lastActivityTime.set(System.currentTimeMillis())
                 parser.append(buffer, count).forEach(::handle)
             }
         } catch (error: Exception) {
-            if (running.get()) onStatus("USB session error: ${error.message}")
+            if (running.get()) onStatus("USB session error: ${error.message}", false)
         } finally {
             close()
-            onStatus("Waiting for USB cable")
+            onStatus("Waiting for USB cable", false)
         }
     }
 
@@ -157,7 +163,7 @@ class AccessorySession(
                 }
             }
         } catch (error: Exception) {
-            if (running.get()) onStatus("Decode error: ${error.message}")
+            if (running.get()) onStatus("Decode error: ${error.message}", false)
         }
     }
 
@@ -207,10 +213,10 @@ class AccessorySession(
             }
             MessageType.PING -> pongWhenReady(frame.payload)
             MessageType.STOP -> {
-                onStatus("Stopped by Mac")
+                onStatus("Stopped by Mac", false)
                 close()
             }
-            MessageType.ERROR -> onStatus("Mac error: ${frame.payload.toString(Charsets.UTF_8)}")
+            MessageType.ERROR -> onStatus("Mac error: ${frame.payload.toString(Charsets.UTF_8)}", false)
             else -> Unit
         }
     }
@@ -220,7 +226,7 @@ class AccessorySession(
             streamConfig = config
             if (surface == null) {
                 configured = false
-                onStatus("Waiting for display surface")
+                onStatus("Waiting for display surface", false)
                 false
             } else {
                 true
@@ -252,7 +258,7 @@ class AccessorySession(
                 configured = true
             }
         }
-        onStatus("Streaming ${config.width} x ${config.height}")
+        onStatus("Streaming ${config.width} x ${config.height}", true)
         if (config.audioEnabled) {
             audioPlayer.start()
         } else {
@@ -293,14 +299,14 @@ class AccessorySession(
             }
         } catch (error: Exception) {
             if (running.get()) {
-                onStatus("USB send error: ${error.message}")
+                onStatus("USB send error: ${error.message}", false)
                 close()
             }
         }
     }
 
     private fun reject(message: String) {
-        onStatus(message)
+        onStatus(message, false)
         send(MessageType.ERROR, JSONObject().put("message", message).toString().toByteArray())
         close()
     }
@@ -317,6 +323,8 @@ class AccessorySession(
         audioPlayer.stop()
         decodeThread?.interrupt()
         decodeThread = null
+        watchdogThread?.interrupt()
+        watchdogThread = null
         synchronized(configLock) {
             decoder.close()
         }
@@ -326,6 +334,24 @@ class AccessorySession(
         input = null
         output = null
         descriptor = null
+    }
+
+    private fun watchdogLoop() {
+        try {
+            while (running.get()) {
+                Thread.sleep(1000)
+                if (!running.get()) break
+                if (System.currentTimeMillis() - lastActivityTime.get() > 5000) {
+                    if (running.get()) {
+                        onStatus("Connection timeout", false)
+                        close()
+                    }
+                    break
+                }
+            }
+        } catch (_: InterruptedException) {
+            // Thread interrupted on close
+        }
     }
 
 }

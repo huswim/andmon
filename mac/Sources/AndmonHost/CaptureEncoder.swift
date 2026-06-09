@@ -34,6 +34,7 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
     private var encodeLatencySampleCount = 0
     private var encoderInputDrops = 0
     var onMetrics: (@Sendable (SessionMetrics) -> Void)?
+    var onStopWithError: (@Sendable (Error) -> Void)?
 
     private var audioConverter: AudioConverterRef?
     private var audioSamplesBuffer: [Float] = []
@@ -172,6 +173,7 @@ final class CaptureEncoder: NSObject, SCStreamOutput, SCStreamDelegate, @uncheck
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         fputs("ScreenCaptureKit stopped: \(error.localizedDescription)\n", stderr)
+        onStopWithError?(error)
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {

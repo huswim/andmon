@@ -365,6 +365,13 @@ final class HostSession: @unchecked Sendable {
                 }
             }
         }
+        streamer.onStopWithError = { [weak self, weak streamerRef = streamer] error in
+            guard let self, let streamerRef else { return }
+            self.stateQueue.async {
+                guard self.streamer === streamerRef else { return }
+                self.failed(error)
+            }
+        }
         self.streamer = streamer
         Task {
             do {

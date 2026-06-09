@@ -50,12 +50,12 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false) && accessory != null) {
                         open(accessory)
                     } else {
-                        showStatus("USB accessory permission denied")
+                        showStatus("USB accessory permission denied", false)
                     }
                 }
                 UsbManager.ACTION_USB_ACCESSORY_DETACHED -> {
                     session.close()
-                    showStatus("Waiting for USB cable")
+                    showStatus("Waiting for USB cable", false)
                 }
             }
         }
@@ -63,7 +63,6 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         configureFullscreen()
 
         status = TextView(this).apply {
@@ -223,7 +222,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
         if (usbManager.hasPermission(accessory)) {
             open(accessory)
         } else {
-            showStatus("Waiting for USB accessory permission")
+            showStatus("Waiting for USB accessory permission", false)
             val permissionIntent = PendingIntent.getBroadcast(
                 this, 0, Intent(ACTION_USB_PERMISSION).setPackage(packageName), PendingIntent.FLAG_IMMUTABLE,
             )
@@ -275,14 +274,31 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
             Rect(0, 0, size.x, size.y)
         }
 
-    private fun showStatus(message: String) = runOnUiThread {
+    private fun showStatus(message: String, isStreaming: Boolean) = runOnUiThread {
         if (message == "Waiting for display surface" && surfaceView.holder.surface.isValid) {
             return@runOnUiThread
         }
         status.text = message
-        status.visibility = if (message.startsWith("Streaming")) View.GONE else View.VISIBLE
+        status.visibility = if (isStreaming) View.GONE else View.VISIBLE
         updateOverlayVisibility()
-        if (message == "Waiting for USB cable") {
+        if (isStreaming) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                setTurnScreenOn(true)
+            } else {
+                @Suppress("DEPRECATION")
+                window.addFlags(WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
+            }
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                setTurnScreenOn(false)
+            } else {
+                @Suppress("DEPRECATION")
+                window.clearFlags(WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
+            }
+        }
+        if (message == "Waiting for USB cable" || message == "Connection timeout") {
             handler.postDelayed({
                 reconnectAttachedAccessory()
             }, 1000)
@@ -298,7 +314,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback {
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         session.updateSurface(null)
         session.close()
-        showStatus("Waiting for display surface")
+        showStatus("Waiting for display surface", false)
     }
 
     override fun onDestroy() {
